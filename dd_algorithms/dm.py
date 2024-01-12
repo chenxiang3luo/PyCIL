@@ -16,6 +16,7 @@ from dd_algorithms.utils import DiffAugment,ParamDiffAug,get_time
 
 # todo
 Iteration = 20000
+# Iteration = 1
 ipc = 10
 lr_img = 0.1
 dsa_strategy = 'color_crop_cutout_flip_scale_rotate'

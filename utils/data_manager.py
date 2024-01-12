@@ -6,26 +6,7 @@ from torchvision import transforms
 from utils.data import iCIFAR10, iCIFAR100, iImageNet100, iImageNet1000
 from tqdm import tqdm
 from torch.utils.data import ConcatDataset,Dataset
-
-class MyDataset(Dataset):
-    def __init__(self, image, labels, transform=None):
-        self.image = image
-        self.labels = labels
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.image)
-
-    def __getitem__(self, index):
-        # Load image and label
-        image = self.image[index]
-        label = self.labels[index]
-
-        # Apply transformations if specified
-        if self.transform:
-            image = self.transform(image)
-
-        return image, label
+import torch
 
 class DataManager(object):
     def __init__(self, dataset_name, shuffle, seed, init_cls, increment):
@@ -87,6 +68,7 @@ class DataManager(object):
                 class_data, class_targets = self._select_rmm(
                     x, y, low_range=idx, high_range=idx + 1, m_rate=m_rate
                 )
+    
             data.append(class_data)
             targets.append(class_targets)
 
@@ -97,7 +79,7 @@ class DataManager(object):
                 targets.append(appendent_targets)
             else:
                 appendent_data, appendent_targets = appendent
-                return ConcatDataset([DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets)])
+                return ConcatDataset([DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets.numpy())])
 
         data, targets = np.concatenate(data), np.concatenate(targets)
 
@@ -285,8 +267,27 @@ class DummyDataset(Dataset):
             image = self.trsf(Image.fromarray(self.images[idx]))
         label = self.labels[idx]
 
-        return idx, image, label
+        return idx,image, label
 
+class MyDataset(Dataset):
+    def __init__(self, image, labels, transform=None):
+        self.image = image
+        self.labels = labels
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.image)
+
+    def __getitem__(self, index):
+        # Load image and label
+        image = self.image[index]
+        label = self.labels[index]
+
+        # Apply transformations if specified
+        if self.transform:
+            image = self.transform(image)
+
+        return index, image, label
 
 def _map_new_class_index(y, order):
     return np.array(list(map(lambda x: order.index(x), y)))
