@@ -5,6 +5,27 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from utils.data import iCIFAR10, iCIFAR100, iImageNet100, iImageNet1000
 from tqdm import tqdm
+from torch.utils.data import ConcatDataset,Dataset
+
+class MyDataset(Dataset):
+    def __init__(self, image, labels, transform=None):
+        self.image = image
+        self.labels = labels
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.image)
+
+    def __getitem__(self, index):
+        # Load image and label
+        image = self.image[index]
+        label = self.labels[index]
+
+        # Apply transformations if specified
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
 
 class DataManager(object):
     def __init__(self, dataset_name, shuffle, seed, init_cls, increment):
@@ -32,7 +53,7 @@ class DataManager(object):
         return len(self._class_order)
 
     def get_dataset(
-        self, indices, source, mode, appendent=None, ret_data=False, m_rate=None
+        self, indices, source, mode, appendent=None, ret_data=False, m_rate=None,is_dd = False
     ):
         if source == "train":
             x, y = self._train_data, self._train_targets
@@ -70,9 +91,13 @@ class DataManager(object):
             targets.append(class_targets)
 
         if appendent is not None and len(appendent) != 0:
-            appendent_data, appendent_targets = appendent
-            data.append(appendent_data)
-            targets.append(appendent_targets)
+            if not is_dd:
+                appendent_data, appendent_targets = appendent
+                data.append(appendent_data)
+                targets.append(appendent_targets)
+            else:
+                appendent_data, appendent_targets = appendent
+                return ConcatDataset([DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets)])
 
         data, targets = np.concatenate(data), np.concatenate(targets)
 

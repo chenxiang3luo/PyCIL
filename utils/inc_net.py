@@ -96,7 +96,12 @@ class BaseNet(nn.Module):
         self.eval()
 
         return self
-    
+    def activate(self):
+        for param in self.parameters():
+            param.requires_grad = True
+        self.train()
+
+        return self    
     def load_checkpoint(self, args):
         if args["init_cls"] == 50:
             pkl_name = "{}_{}_{}_B{}_Inc{}".format( 
@@ -151,6 +156,16 @@ class IncrementalNet(BaseNet):
         return fc
 
     def forward(self, x):
+        x = self.convnet(x)
+        out = self.fc(x["features"])
+        out.update(x)
+        if hasattr(self, "gradcam") and self.gradcam:
+            out["gradcam_gradients"] = self._gradcam_gradients
+            out["gradcam_activations"] = self._gradcam_activations
+
+        return out
+    
+    def forward_(self, x):
         x = self.convnet(x)
         out = self.fc(x["features"])
         out.update(x)

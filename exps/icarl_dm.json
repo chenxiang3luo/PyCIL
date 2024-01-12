@@ -3,13 +3,13 @@
     "dataset": "cifar100",
     "memory_size": 2000,
     "memory_per_class": 20,
-    "fixed_memory": false,
+    "fixed_memory": true,
     "shuffle": true,
-    "init_cls": 0,
+    "init_cls": 10,
     "increment": 10,
-    "model_name": "icarl",
+    "model_name": "icarl_dm",
     "convnet_type": "resnet18",
-    "device": ["0","1","2","3"],
+    "device": ["3"],
     "seed": [1993]
 }
 

@@ -67,7 +67,10 @@ def _train(args):
         )
         model.incremental_train(data_manager)
         cnn_accy, nme_accy = model.eval_task()
+        
         model.after_task()
+        model.build_rehearsal_memory(data_manager, model._total_classes)
+        
 
         if nme_accy is not None:
             logging.info("CNN: {}".format(cnn_accy["grouped"]))
