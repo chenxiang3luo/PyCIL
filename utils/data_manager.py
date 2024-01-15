@@ -7,6 +7,8 @@ from utils.data import iCIFAR10, iCIFAR100, iImageNet100, iImageNet1000
 from tqdm import tqdm
 from torch.utils.data import ConcatDataset,Dataset
 import torch
+import time
+from dd_algorithms.utils import DiffAugment,ParamDiffAug,get_time
 
 class DataManager(object):
     def __init__(self, dataset_name, shuffle, seed, init_cls, increment):
@@ -19,6 +21,7 @@ class DataManager(object):
         offset = len(self._class_order) - sum(self._increments)
         if offset > 0:
             self._increments.append(offset)
+        self.dsa_strategy = 'color_crop_cutout_flip_scale_rotate'
 
     @property
     def nb_tasks(self):
@@ -77,12 +80,14 @@ class DataManager(object):
                 appendent_data, appendent_targets = appendent
                 data.append(appendent_data)
                 targets.append(appendent_targets)
+
             else:
                 appendent_data, appendent_targets = appendent
-                return ConcatDataset([DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets.numpy())])
+                # return ConcatDataset([DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets.numpy(),self.dsa_strategy)])
+                return [DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets.numpy(),self.dsa_strategy)]
 
-        data, targets = np.concatenate(data), np.concatenate(targets)
-
+        data  = np.concatenate(data)
+        targets = np.concatenate(targets)
         if ret_data:
             return data, targets, DummyDataset(data, targets, trsf, self.use_path)
         else:
@@ -270,11 +275,11 @@ class DummyDataset(Dataset):
         return idx,image, label
 
 class MyDataset(Dataset):
-    def __init__(self, image, labels, transform=None):
-        self.image = image
+    def __init__(self, image, labels, dsa_strategy=None):
+        self.image = image.detach().float()
         self.labels = labels
-        self.transform = transform
-
+        self.dsa_param = ParamDiffAug()
+        self.dsa_strategy = dsa_strategy
     def __len__(self):
         return len(self.image)
 
@@ -282,10 +287,11 @@ class MyDataset(Dataset):
         # Load image and label
         image = self.image[index]
         label = self.labels[index]
-
+        seed = int(time.time() * 1000) % 100000
+        image = torch.unsqueeze(image, dim=0)
+        image = DiffAugment(image, self.dsa_strategy, seed=seed, param=self.dsa_param)
+        image = torch.squeeze(image, dim=0)
         # Apply transformations if specified
-        if self.transform:
-            image = self.transform(image)
 
         return index, image, label
 

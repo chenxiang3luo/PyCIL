@@ -29,6 +29,25 @@ weight_decay = 2e-4
 num_workers = 8
 T = 2
 
+#convne3
+init_epoch = 300
+# init_epoch = 1
+init_lr = 0.1
+init_milestones = [100, 200, 250]
+init_lr_decay = 0.1
+init_weight_decay = 0.0005
+
+
+epochs = 270
+# epochs = 1
+lrate = 0.1
+milestones = [120, 220]
+lrate_decay = 0.1
+batch_size = 128
+weight_decay = 2e-4
+num_workers = 8
+T = 2
+
 
 class iCaRL(BaseLearner):
     def __init__(self, args):

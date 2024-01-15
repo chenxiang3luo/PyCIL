@@ -109,3 +109,31 @@ def save_model(args, model):
     else:
         weight = model._network.cpu()
     torch.save(weight, _path)
+
+
+def denormalize_cifar100(image_tensor, use_fp16=False):
+    '''
+    convert floats back to input
+    '''
+    if use_fp16:
+        mean = np.array([0.5070751592371323, 0.48654887331495095, 0.4409178433670343], dtype=np.float16)
+        std = np.array([0.2673342858792401, 0.2564384629170883, 0.27615047132568404], dtype=np.float16)
+    else:
+        mean = np.array([0.5070751592371323, 0.48654887331495095, 0.4409178433670343])
+        std = np.array([0.2673342858792401, 0.2564384629170883, 0.27615047132568404])
+
+    for c in range(3):
+        m, s = mean[c], std[c]
+        image_tensor[:, c] = torch.clamp(image_tensor[:, c] * s + m, 0, 1)
+
+    return image_tensor
+
+from PIL import Image
+def tensor2img(images,is_batch = True):
+    if is_batch:
+        image_np = images.cpu().numpy().transpose((0, 2, 3, 1))
+    else:
+        image_np = images.cpu().numpy().transpose((1, 2, 0))
+    pil_image =(image_np* 255).astype(np.uint8)
+    return pil_image
+

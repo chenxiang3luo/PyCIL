@@ -52,11 +52,12 @@ class BaseLearner(object):
             return self._network.feature_dim
 
     def build_rehearsal_memory(self, data_manager, per_class):
-        if self._fixed_memory:
-            self._construct_exemplar_unified(data_manager, per_class)
-        else:
-            self._reduce_exemplar(data_manager, per_class)
-            self._construct_exemplar(data_manager, per_class)
+        if per_class > 0:
+            if self._fixed_memory:
+                self._construct_exemplar_unified(data_manager, per_class)
+            else:
+                self._reduce_exemplar(data_manager, per_class)
+                self._construct_exemplar(data_manager, per_class)
 
     def save_checkpoint(self, filename):
         self._network.cpu()

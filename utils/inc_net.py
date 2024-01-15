@@ -3,6 +3,7 @@ import logging
 import torch
 from torch import nn
 from convs.cifar_resnet import resnet32
+from convs.conv_cifar import conv2,conv3
 from convs.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
 from convs.ucir_cifar_resnet import resnet32 as cosine_resnet32
 from convs.ucir_resnet import resnet18 as cosine_resnet18
@@ -40,7 +41,10 @@ def get_convnet(args, pretrained=False):
         return resnet34_cbam(pretrained=pretrained,args=args)
     elif name == "resnet50_cbam":
         return resnet50_cbam(pretrained=pretrained,args=args)
-    
+    elif name == "convnet3":
+        return conv3(pretrained=pretrained,args=args)
+    elif name == "convnet2":
+        return conv2(pretrained=pretrained,args=args)
     # MEMO benchmark backbone
     elif name == 'memo_resnet18':
         _basenet, _adaptive_net = get_memo_resnet18()
