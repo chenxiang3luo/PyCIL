@@ -1,5 +1,5 @@
 {
-    "prefix": "wo_dd_convet",
+    "prefix": "wo_dd_resnet18_n_1_128",
     "dataset": "cifar100",
     "memory_size": 1000,
     "memory_per_class": 10,
@@ -8,8 +8,8 @@
     "init_cls": 10,
     "increment": 10,
     "model_name": "icarl_dm",
-    "convnet_type": "convnet3",
-    "device": ["2"],
+    "convnet_type": "resnet18",
+    "device": ["3"],
     "seed": [1993]
 }
 

@@ -1,0 +1,15 @@
+{
+    "prefix": "n_2_fkd",
+    "dataset": "cifar100",
+    "memory_size": 2000,
+    "memory_per_class": 20,
+    "fixed_memory": true,
+    "shuffle": false,
+    "init_cls": 10,
+    "increment": 10,
+    "model_name": "icarl_sre2l",
+    "convnet_type": "resnet18",
+    "device": ["2"],
+    "seed": [1993]
+}
+

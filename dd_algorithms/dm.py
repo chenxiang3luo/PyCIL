@@ -26,7 +26,7 @@ BN  =True
 channel = 3 
 dsa = False if dsa_strategy in ['none', 'None'] else True
 im_size= [32,32]
-batch_real = 256
+batch_real = 128
 
 class DistributionMatching():
     def __init__(self, args,pretrained = False):

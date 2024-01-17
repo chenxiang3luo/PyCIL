@@ -16,18 +16,18 @@ from dd_algorithms.utils import DiffAugment,ParamDiffAug,get_time
 EPSILON = 1e-8
 from torchvision import datasets, transforms
 from torch.utils.data import ConcatDataset
-init_epoch = 300
-init_epoch = 1
-init_lr = 0.1
-init_milestones = [100, 200, 250]
+init_epoch = 200
+# init_epoch = 1
+init_lr = 0.01
+init_milestones = [60, 120, 170]
 init_lr_decay = 0.1
 init_weight_decay = 0.0005
 
 
-epochs = 270
+epochs = 170
 # epochs = 1
 lrate = 0.01
-milestones = [120, 220]
+milestones = [80, 120]
 lrate_decay = 0.1
 batch_size = 128
 weight_decay = 1e-5

@@ -84,7 +84,9 @@ class DataManager(object):
             else:
                 appendent_data, appendent_targets = appendent
                 # return ConcatDataset([DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets.numpy(),self.dsa_strategy)])
-                return [DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets.numpy(),self.dsa_strategy)]
+                # return [DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets.numpy(),self.dsa_strategy)]
+                return [DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),None]
+                
 
         data  = np.concatenate(data)
         targets = np.concatenate(targets)
