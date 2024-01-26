@@ -49,7 +49,7 @@ import time
 def get_convet3(model, channel, num_classes, im_size=(32, 32)):
     torch.random.manual_seed(int(time.time() * 1000) % 100000)
     net_width, net_depth, net_act, net_norm, net_pooling = get_default_convnet_setting() 
-    net = ConvNet3(channel=channel, num_classes=num_classes, net_width=net_width, net_depth=net_depth, net_act=net_act, net_norm=net_norm, net_pooling=net_pooling, im_size=im_size)
+    net = ConvNet3(channel=channel, num_classes=num_classes, net_width=net_width, net_depth=net_depth, net_act=net_act, net_norm='batchnorm', net_pooling=net_pooling, im_size=im_size)
 
 class ConvNet3(nn.Module):
     def __init__(self, channel, num_classes, net_width, net_depth, net_act, net_norm, net_pooling, im_size = (32,32)):
@@ -151,7 +151,7 @@ class SpecializedConvNet2(nn.Module):
 def conv2(pretrained,args):
     return ConvNet2()
 
-def conv3(pretrained,args):
+def conv3(args,pretrained=False):
     torch.random.manual_seed(int(time.time() * 1000) % 100000)
     net_width, net_depth, net_act, net_norm, net_pooling = get_default_convnet_setting() 
     return ConvNet3(channel=3, num_classes=None, net_width=net_width, net_depth=net_depth, net_act=net_act, net_norm='batchnorm', net_pooling=net_pooling, im_size=(32,32))

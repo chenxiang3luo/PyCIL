@@ -355,6 +355,7 @@ def rand_cutout(x, param):
 
 AUGMENT_FNS = {
     'color': [rand_brightness, rand_saturation, rand_contrast],
+    # 'color': [rand_brightness],
     'crop': [rand_crop],
     'cutout': [rand_cutout],
     'flip': [rand_flip],

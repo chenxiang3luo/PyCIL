@@ -3,6 +3,9 @@ def get_model(model_name, args):
     if name == "icarl":
         from models.icarl import iCaRL
         return iCaRL(args)
+    if name == "icarl_random":
+        from models.icarl_random import iCaRL_Random
+        return iCaRL_Random(args)
     elif name == "icarl_dm":
         from models.icarl_dm import iCaRL_DM
         return iCaRL_DM(args)

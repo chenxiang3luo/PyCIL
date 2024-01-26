@@ -84,8 +84,8 @@ class DataManager(object):
             else:
                 appendent_data, appendent_targets = appendent
                 # return ConcatDataset([DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets.numpy(),self.dsa_strategy)])
-                # return [DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),MyDataset(appendent_data,appendent_targets.numpy(),self.dsa_strategy)]
-                return [DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),None]
+                return [DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),DummyDataset(appendent_data,appendent_targets,trsf, self.use_path)]
+                # return [DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),None]
                 
 
         data  = np.concatenate(data)
@@ -278,7 +278,7 @@ class DummyDataset(Dataset):
 
 class MyDataset(Dataset):
     def __init__(self, image, labels, dsa_strategy=None):
-        self.image = image.detach().float()
+        self.image = image
         self.labels = labels
         self.dsa_param = ParamDiffAug()
         self.dsa_strategy = dsa_strategy
@@ -292,7 +292,10 @@ class MyDataset(Dataset):
         seed = int(time.time() * 1000) % 100000
         image = torch.unsqueeze(image, dim=0)
         image = DiffAugment(image, self.dsa_strategy, seed=seed, param=self.dsa_param)
+        # normalize = transforms.Normalize(mean = [0.5071, 0.4866, 0.4409],
+        # std = [0.2673, 0.2564, 0.2762])
         image = torch.squeeze(image, dim=0)
+        # image = normalize(image)
         # Apply transformations if specified
 
         return index, image, label

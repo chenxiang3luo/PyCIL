@@ -2,6 +2,7 @@ import logging
 import numpy as np
 from tqdm import tqdm
 import torch
+import pickle
 from torch import nn
 from collections import defaultdict
 from torch import optim
@@ -26,31 +27,32 @@ from dd_algorithms.utils_fkd import (ComposeWithCoords, ImageFolder_FKD_MIX,
 EPSILON = 1e-8
 
 init_epoch = 200
-init_epoch = 1
+# init_epoch = 1
 init_lr = 0.01
 init_milestones = [60, 120, 170]
 init_lr_decay = 0.1
 init_weight_decay = 0.0005
 
 
-# epochs = 270
-
 epochs = 170
 # epochs = 1
 lrate = 0.01
 milestones = [80, 120]
 lrate_decay = 0.1
-batch_size = 64
-weight_decay = 2e-4
+batch_size = 128
+weight_decay = 1e-5
 num_workers = 8
-T = 2.
+T = 2
 
+step = 0.25
+# n = int(1//step if step < 1 else step)
+n = 3
 class MyClass:
     pass
 args = MyClass()
 temperature = 2
 use_fp16 = True
-gradient_accumulation_steps = 1
+gradient_accumulation_steps = 2
 args.mix_type = 'cutmix'
 args.cutmix = 1.0
 args.mode= 'fkd_save'
@@ -83,9 +85,9 @@ class iCaRL_Sre2L(BaseLearner):
                 appendent=self._get_memory(),
                 is_dd = True
             )
-            # self.syn_loader = DataLoader(
-            #     syn_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
-            # )
+            self.syn_loader = DataLoader(
+                syn_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
+            )
         else:
             train_dataset = data_manager.get_dataset(
                 np.arange(self._known_classes, self._total_classes),
@@ -112,18 +114,23 @@ class iCaRL_Sre2L(BaseLearner):
 
         if len(self._multiple_gpus) > 1:
             self._network = nn.DataParallel(self._network, self._multiple_gpus)
-        self._train(self.train_loader, self.test_loader)
+        self._train(self.train_loader,self.syn_loader, self.test_loader)
         self._old_network = self._network.copy().freeze()
         self.build_rehearsal_memory(data_manager, self.samples_per_class)
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
 
-    def _train(self, train_loader, test_loader):
+    def _train(self, train_loader,syn_loader, test_loader,use_pretrained=False):
         self._network.to(self._device)
         if self._old_network is not None:
             self._old_network.to(self._device)
 
         if self._cur_task == 0:
+            if use_pretrained:
+                f = open('./ini_resnet18', 'rb')
+                self._network = pickle.load(f)
+                self._network.to(self._device)
+                return
             optimizer = optim.SGD(
                 self._network.parameters(),
                 momentum=0.9,
@@ -134,6 +141,8 @@ class iCaRL_Sre2L(BaseLearner):
                 optimizer=optimizer, milestones=init_milestones, gamma=init_lr_decay
             )
             self._init_train(train_loader, test_loader, optimizer, scheduler)
+            f = open('./ini_resnet18', 'wb')
+            pickle.dump(self._network, f)
         else:
             optimizer = optim.SGD(
                 self._network.parameters(),
@@ -144,7 +153,7 @@ class iCaRL_Sre2L(BaseLearner):
             scheduler = optim.lr_scheduler.MultiStepLR(
                 optimizer=optimizer, milestones=milestones, gamma=lrate_decay
             )
-            self._update_representation(train_loader, test_loader, optimizer, scheduler)
+            self._update_representation(train_loader,syn_loader, test_loader, optimizer, scheduler)
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(init_epoch))
@@ -192,10 +201,12 @@ class iCaRL_Sre2L(BaseLearner):
 
         logging.info(info)
 
-    def _update_representation(self, train_loader, test_loader, optimizer, scheduler):
+    def _update_representation(self, train_loader,syn_loader, test_loader, optimizer, scheduler):
         loss_function_kl = nn.KLDivLoss(reduction='batchmean')
         prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):
+            cnn_accy, nme_accy = self.eval_task()
+            print(cnn_accy["grouped"])
             self._network.train()
             losses = 0.0
             correct, total = 0, 0
@@ -221,30 +232,57 @@ class iCaRL_Sre2L(BaseLearner):
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
                 # n step
-                for i in range(1):
-                    images, targets, flip_status, coords_status = self.get_random_batch(batch_size)
-                    images = images.to(self._device)
-                    targets = targets.to(self._device)
+                if (step >= 1):
+                    for j in range(n):
+                        images, targets, flip_status, coords_status = self.get_random_batch(batch_size)
+                        images = images.to(self._device)
+                        targets = targets.to(self._device)
 
-                    images, mix_index, mix_lam, mix_bbox = mix_aug(images, args)
-                    soft_label = self._old_network(images)["logits"]
+                        images, mix_index, mix_lam, mix_bbox = mix_aug(images, args)
+                        soft_label = self._old_network(images)["logits"]
 
-                    optimizer.zero_grad()
-                    small_bs = batch_size // gradient_accumulation_steps
-                    
-                    accum_step = gradient_accumulation_steps
-                    for accum_id in range(accum_step):
-                        partial_images = images[accum_id * small_bs: (accum_id + 1) * small_bs]
-                        partial_target = targets[accum_id * small_bs: (accum_id + 1) * small_bs]
-                        partial_soft_label = soft_label[accum_id * small_bs: (accum_id + 1) * small_bs]
+                        optimizer.zero_grad()
+                        small_bs = batch_size // gradient_accumulation_steps
                         
-                        output= self._network(partial_images)['logits']
-                        output = F.log_softmax(output/temperature, dim=1)
-                        partial_soft_label = F.softmax(partial_soft_label/temperature, dim=1)
-                        loss = loss_function_kl(output[:, : self._known_classes], partial_soft_label)
-                        loss = loss / gradient_accumulation_steps
-                        loss.backward()
-                    optimizer.step()
+                        accum_step = gradient_accumulation_steps
+                        for accum_id in range(accum_step):
+                            partial_images = images[accum_id * small_bs: (accum_id + 1) * small_bs]
+                            partial_target = targets[accum_id * small_bs: (accum_id + 1) * small_bs]
+                            partial_soft_label = soft_label[accum_id * small_bs: (accum_id + 1) * small_bs]
+                            
+                            output= self._network(partial_images)['logits']
+                            output = F.log_softmax(output/temperature, dim=1)
+                            partial_soft_label = F.softmax(partial_soft_label/temperature, dim=1)
+                            loss = loss_function_kl(output[:, : self._known_classes], partial_soft_label)
+                            loss = loss / gradient_accumulation_steps
+                            loss.backward()
+                        optimizer.step()
+                else:
+                    if i%n == 0:
+                        images, targets, flip_status, coords_status = self.get_random_batch(batch_size)
+                        images = images.to(self._device)
+                        targets = targets.to(self._device)
+
+                        images, mix_index, mix_lam, mix_bbox = mix_aug(images, args)
+                        soft_label = self._old_network(images)["logits"]
+
+                        optimizer.zero_grad()
+                        small_bs = batch_size // gradient_accumulation_steps
+                        
+                        accum_step = gradient_accumulation_steps
+                        for accum_id in range(accum_step):
+                            partial_images = images[accum_id * small_bs: (accum_id + 1) * small_bs]
+                            partial_target = targets[accum_id * small_bs: (accum_id + 1) * small_bs]
+                            partial_soft_label = soft_label[accum_id * small_bs: (accum_id + 1) * small_bs]
+                            
+                            output= self._network(partial_images)['logits']
+                            output = F.log_softmax(output/temperature, dim=1)
+                            partial_soft_label = F.softmax(partial_soft_label/temperature, dim=1)
+                            loss = loss_function_kl(output[:, : self._known_classes], partial_soft_label)
+                            loss = loss / gradient_accumulation_steps
+                            loss.backward()
+                        optimizer.step()
+
 
                     # _, preds = torch.max(logits, dim=1)
                     # correct += preds.eq(targets.expand_as(preds)).cpu().sum()
@@ -299,8 +337,8 @@ class iCaRL_Sre2L(BaseLearner):
         logging.info(
             "Constructing exemplars for new classes...({} for old classes)".format(m)
         )
-        classes_range = np.arange(self._known_classes, self._total_classes)
-        data, targets, _ = data_manager.get_dataset(classes_range
+        classes_range = np.arange(0, self._total_classes)
+        data, targets, _ = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes)
             ,
             source="train",
             mode="train",
@@ -324,16 +362,16 @@ class iCaRL_Sre2L(BaseLearner):
         syn_data = denormalize_cifar100(syn_data)
         syn_data = tensor2img(syn_data)
         syn_lablel = syn_lablel.cpu().numpy()
-        self._data_memory = (
-            np.concatenate((self._data_memory, syn_data))
-            if len(self._data_memory) != 0
-            else syn_data
-            )
-        self._targets_memory = (
-            np.concatenate((self._targets_memory, syn_lablel))
-            if len(self._targets_memory) != 0
-            else syn_lablel
-            )
+        # self._data_memory = (
+        #     np.concatenate((self._data_memory, syn_data))
+        #     if len(self._data_memory) != 0
+        #     else syn_data
+        #     )
+        # self._targets_memory = (
+        #     np.concatenate((self._targets_memory, syn_lablel))
+        #     if len(self._targets_memory) != 0
+        #     else syn_lablel
+        #     )
         
         # self._data_memory = (
         #     torch.cat((self._data_memory, syn_data))
@@ -346,8 +384,8 @@ class iCaRL_Sre2L(BaseLearner):
         #     else syn_lablel
         #     )
 
-        # self._data_memory = syn_data
-        # self._targets_memory = syn_lablel
+        self._data_memory = syn_data
+        self._targets_memory = syn_lablel
 
 
     def build_rehearsal_memory(self, data_manager, per_class,is_dd=True):

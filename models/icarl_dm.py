@@ -6,6 +6,8 @@ from torch import nn
 from torch import optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+import pickle
+from PIL import Image
 from models.base import BaseLearner
 from utils.inc_net import IncrementalNet
 from utils.inc_net import CosineIncrementalNet
@@ -101,12 +103,19 @@ class iCaRL_DM(BaseLearner):
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
 
-    def _train(self, train_loader,syn_loader, test_loader):
+    def _train(self, train_loader,syn_loader, test_loader,use_pretrained=False):
         self._network.to(self._device)
         if self._old_network is not None:
             self._old_network.to(self._device)
 
         if self._cur_task == 0:
+            if use_pretrained:
+                f = open('./ini_resnet18_cifar100', 'rb')
+                self._network = pickle.load(f)
+                # self._network.convnet.dual_ini(0)
+                # self._network.convnet.dual_ini(1)
+                self._network.to(self._device)
+                return
             optimizer = optim.SGD(
                 self._network.parameters(),
                 momentum=0.9,
@@ -117,6 +126,8 @@ class iCaRL_DM(BaseLearner):
                 optimizer=optimizer, milestones=init_milestones, gamma=init_lr_decay
             )
             self._init_train(train_loader, test_loader, optimizer, scheduler)
+            f = open('./ini_resnet18_cifar100', 'wb')
+            pickle.dump(self._network, f)
         else:
             optimizer = optim.SGD(
                 self._network.parameters(),
@@ -124,18 +135,22 @@ class iCaRL_DM(BaseLearner):
                 momentum=0.9,
                 weight_decay=weight_decay,
             )  # 1e-5
-            # scheduler = optim.lr_scheduler.MultiStepLR(
-            #     optimizer=optimizer, milestones=milestones, gamma=lrate_decay
-            # )
-            self._update_representation(train_loader,syn_loader, test_loader, optimizer, None)
+            scheduler = optim.lr_scheduler.MultiStepLR(
+                optimizer=optimizer, milestones=milestones, gamma=lrate_decay
+            )
+            self._update_representation(train_loader,syn_loader, test_loader, optimizer, scheduler)
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(init_epoch))
+        self._network.to(self._device)
         for _, epoch in enumerate(prog_bar):
             self._network.train()
             losses = 0.0
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
+                
+                # seed = int(time.time() * 1000) % 100000
+                # inputs = DiffAugment(inputs, self.dsa_strategy, seed=seed, param=self.dsa_param)
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
                 logits = self._network(inputs)["logits"]
 
@@ -172,17 +187,33 @@ class iCaRL_DM(BaseLearner):
                 )
 
             prog_bar.set_description(info)
-
+        # self._network.convnet.dual_ini(0)
+        # self._network.convnet.dual_ini(1)
         logging.info(info)
 
     def _update_representation(self, train_loader,syn_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):
+            cnn_accy, nme_accy = self.eval_task()
+            print(cnn_accy["grouped"])
             self._network.train()
             losses = 0.0
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
+                # self._network.convnet.dual_batch(0)
+                # self._network.to(self._device)
+                seed = int(time.time() * 1000) % 100000
+                
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
+                
+                # syn_inputs, syn_targets = self.get_random_batch(batch_size)
+                # syn_inputs, syn_targets = syn_inputs.to(self._device), syn_targets.to(self._device)
+
+                # inputs = torch.cat([inputs,syn_inputs])
+                # targets = torch.cat([targets,syn_targets])
+
+                # inputs = DiffAugment(inputs, self.dsa_strategy, seed=seed, param=self.dsa_param)
+
                 logits = self._network(inputs)["logits"]
 
                 loss_clf = F.cross_entropy(logits, targets)
@@ -203,19 +234,24 @@ class iCaRL_DM(BaseLearner):
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
                 # n step
-                for i in range(1):
-                    inputs, targets = self.get_random_batch(batch_size)
-                    inputs, targets = inputs.to(self._device), targets.to(self._device)
-                    logits = self._network(inputs)["logits"]
+                # self._network.convnet.dual_batch(1)
+                self._network.to(self._device)
+                
+                for i in range(3):
+                    seed = int(time.time() * 1000) % 100000
+                    inputs_syn, targets_syn = self.get_random_batch(batch_size)
+                    # inputs_syn = DiffAugment(inputs_syn, self.dsa_strategy, seed=seed, param=self.dsa_param)
+                    inputs_syn, targets_syn = inputs_syn.to(self._device), targets_syn.to(self._device)
+                    logits = self._network(inputs_syn)["logits"]
 
-                    loss_clf = F.cross_entropy(logits, targets)
+                    loss_clf = F.cross_entropy(logits, targets_syn)
                     loss_kd = _KD_loss(
                         logits[:, : self._known_classes],
-                        self._old_network(inputs)["logits"],
+                        self._old_network(inputs_syn)["logits"],
                         T,
                     )
 
-                    loss = loss_clf + loss_kd
+                    loss = (loss_clf+loss_kd)
 
                     optimizer.zero_grad()
                     loss.backward()
@@ -223,11 +259,14 @@ class iCaRL_DM(BaseLearner):
                     losses += loss.item()
 
                     _, preds = torch.max(logits, dim=1)
-                    correct += preds.eq(targets.expand_as(preds)).cpu().sum()
-                    total += len(targets)
+                    correct += preds.eq(targets_syn.expand_as(preds)).cpu().sum()
+                    total += len(targets_syn)
 
             # for i, (_, inputs, targets) in enumerate(syn_loader):
             #     inputs, targets = inputs.to(self._device), targets.to(self._device)
+
+            #     seed = int(time.time() * 1000) % 100000
+            #     inputs = DiffAugment(inputs, self.dsa_strategy, seed=seed, param=self.dsa_param)
             #     logits = self._network(inputs)["logits"]
 
             #     loss_clf = F.cross_entropy(logits, targets)
@@ -247,8 +286,8 @@ class iCaRL_DM(BaseLearner):
             #     _, preds = torch.max(logits, dim=1)
             #     correct += preds.eq(targets.expand_as(preds)).cpu().sum()
             #     total += len(targets)
-
-            # scheduler.step()
+            # # self._network.convnet.dual_batch(0)
+            scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
             if epoch % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
@@ -296,30 +335,30 @@ class iCaRL_DM(BaseLearner):
         # real_label = np.concatenate((self._targets_memory, targets)) if len(self._targets_memory) != 0 else targets
         real_label = targets
         syn_data, syn_lablel = self.dd.gen_synthetic_data(self._old_network,None,real_data,real_label,classes_range)
-        # syn_data = denormalize_cifar100(syn_data)
-        # syn_data = tensor2img(syn_data)
-        # syn_lablel = syn_lablel.cpu().numpy()
-        # self._data_memory = (
-        #     np.concatenate((self._data_memory, syn_data))
-        #     if len(self._data_memory) != 0
-        #     else syn_data
-        #     )
-        # self._targets_memory = (
-        #     np.concatenate((self._targets_memory, syn_lablel))
-        #     if len(self._targets_memory) != 0
-        #     else syn_lablel
-        #     )
-        
+        syn_data = denormalize_cifar100(syn_data)
+        syn_data = tensor2img(syn_data)
+        syn_lablel = syn_lablel.cpu().numpy()
         self._data_memory = (
-            torch.cat((self._data_memory, syn_data))
+            np.concatenate((self._data_memory, syn_data))
             if len(self._data_memory) != 0
             else syn_data
             )
         self._targets_memory = (
-            torch.cat((self._targets_memory, syn_lablel))
+            np.concatenate((self._targets_memory, syn_lablel))
             if len(self._targets_memory) != 0
             else syn_lablel
             )
+        
+        # self._data_memory = (
+        #     torch.cat((self._data_memory, syn_data))
+        #     if len(self._data_memory) != 0
+        #     else syn_data
+        #     )
+        # self._targets_memory = (
+        #     torch.cat((self._targets_memory, syn_lablel))
+        #     if len(self._targets_memory) != 0
+        #     else syn_lablel
+        #     )
 
         # self._data_memory = syn_data
         # self._targets_memory = syn_lablel
@@ -347,8 +386,19 @@ class iCaRL_DM(BaseLearner):
         image = self._data_memory[random_indices]
         label = self._targets_memory[random_indices]
         seed = int(time.time() * 1000) % 100000
-        image = DiffAugment(image, self.dsa_strategy, seed=seed, param=self.dsa_param)
-        return [image, label]
+        # image = DiffAugment(image, self.dsa_strategy, seed=seed, param=self.dsa_param)
+        normalize = transforms.Normalize(mean = [0.5071, 0.4866, 0.4409],
+        std = [0.2673, 0.2564, 0.2762])
+        train_trsf = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(brightness=63 / 255),
+        transforms.ToTensor(),
+        normalize
+        ])
+        data = [train_trsf(Image.fromarray(img)) for img in image]
+        image = torch.stack(data)
+        return [image, torch.tensor(label)]
 
 def _KD_loss(pred, soft, T):
     pred = torch.log_softmax(pred / T, dim=1)

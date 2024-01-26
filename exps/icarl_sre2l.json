@@ -1,15 +1,15 @@
 {
-    "prefix": "n_2_fkd",
+    "prefix": "n_0.5_fkd_baselines",
     "dataset": "cifar100",
-    "memory_size": 2000,
-    "memory_per_class": 20,
+    "memory_size": 1000,
+    "memory_per_class": 10,
     "fixed_memory": true,
     "shuffle": false,
     "init_cls": 10,
     "increment": 10,
     "model_name": "icarl_sre2l",
     "convnet_type": "resnet18",
-    "device": ["2"],
+    "device": ["3"],
     "seed": [1993]
 }
 

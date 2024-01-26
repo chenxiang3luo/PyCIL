@@ -4,6 +4,7 @@ https://github.com/pytorch/vision/blob/master/torchvision/models/resnet.py
 '''
 import torch
 import torch.nn as nn
+import time
 try:
     from torchvision.models.utils import load_state_dict_from_url
 except:
@@ -289,6 +290,7 @@ def resnet18(pretrained=False, progress=True, **kwargs):
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
+    torch.random.manual_seed(int(time.time() * 1000) % 100000)
     return _resnet('resnet18', BasicBlock, [2, 2, 2, 2], pretrained, progress,
                    **kwargs)
 
