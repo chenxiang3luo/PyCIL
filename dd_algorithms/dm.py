@@ -17,7 +17,7 @@ import time
 from dd_algorithms.utils import DiffAugment,ParamDiffAug,get_time
 
 # todo
-Iteration = 20000
+Iteration = 10000
 # Iteration = 1
 ipc = 10
 lr_img = 0.01
@@ -84,7 +84,7 @@ class DistributionMatching():
 
             ''' Train synthetic data '''
             # net = conv3(pretrained=False,args=self.args) # get a random model
-            net = old_model.copy().activate()
+            net = old_model.copy()
             net = net.to(self._device)
             net.train()
             for param in list(net.parameters()):
@@ -148,7 +148,8 @@ class DistributionMatching():
 
             if it%1000 == 0:
                 print('%s iter = %05d, loss = %.4f' % (get_time(), it, loss_avg))
-
+        
+        
             
         new_syn = [copy.deepcopy(image_syn.detach().cpu()), copy.deepcopy(label_syn.detach().cpu())]
                 

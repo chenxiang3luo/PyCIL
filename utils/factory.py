@@ -45,6 +45,12 @@ def get_model(model_name, args):
     elif name == "foster":
         from models.foster import FOSTER
         return FOSTER(args)
+    elif name == "foster_dm":
+        from models.foster_dm import FOSTER_DM
+        return FOSTER_DM(args)
+    elif name == "foster_sre2l":
+        from models.foster_sre2l import FOSTER_SRE2L
+        return FOSTER_SRE2L(args)
     elif name == "rmm-icarl":
         from models.rmm import RMM_FOSTER, RMM_iCaRL
         return RMM_iCaRL(args)
@@ -69,6 +75,9 @@ def get_model(model_name, args):
     elif name == "beefiso":
         from models.beef_iso import BEEFISO
         return BEEFISO(args)
+    elif name == "beefiso_dm":
+        from models.beef_iso_dm import BEEFISO_DM
+        return BEEFISO_DM(args)
     elif name == "simplecil":
         from models.simplecil import SimpleCIL
         return SimpleCIL(args)

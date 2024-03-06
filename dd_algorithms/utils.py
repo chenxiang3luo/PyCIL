@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 from torchvision import datasets, transforms
 from scipy.ndimage.interpolation import rotate as scipyrotate
-
+from PIL import Image
 
 
 
@@ -426,3 +426,17 @@ def clip(image_tensor, use_fp16=False):
         m, s = mean[c], std[c]
         image_tensor[:, c] = torch.clamp(image_tensor[:, c], -m/s, (1 - m)/s)
     return image_tensor
+
+
+def save_images(images, targets):
+    for id in range(len(images)):
+        class_id = targets[id]
+
+
+        # save into separate folders
+        dir_path = '{}'.format('/home/chenxiang/PyCIL/dd_algorithms/syn_img')
+        place_to_store = dir_path +'/class{:03d}_id{:03d}.jpg'.format(class_id,id)
+
+        image_np = images[id]
+        pil_image = Image.fromarray(image_np)
+        pil_image.save(place_to_store)

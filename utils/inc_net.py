@@ -366,9 +366,9 @@ class DERNet(nn.Module):
 
     def update_fc(self, nb_classes):
         if len(self.convnets) == 0:
-            self.convnets.append(get_convnet(self.args))
+            self.convnets.append(get_convnet(self.args,pretrained=self.pretrained))
         else:
-            self.convnets.append(get_convnet(self.args))
+            self.convnets.append(get_convnet(self.args,pretrained=self.pretrained))
             self.convnets[-1].load_state_dict(self.convnets[-2].state_dict())
 
         if self.out_dim is None:
@@ -493,7 +493,7 @@ class FOSTERNet(nn.Module):
         return out
 
     def update_fc(self, nb_classes):
-        self.convnets.append(get_convnet(self.args))
+        self.convnets.append(get_convnet(self.args,pretrained=self.pretrained))
         if self.out_dim is None:
             self.out_dim = self.convnets[-1].out_dim
         fc = self.generate_fc(self.feature_dim, nb_classes)
@@ -612,7 +612,6 @@ class BEEFISONet(nn.Module):
     def forward(self, x):
         features = [convnet(x)["features"] for convnet in self.convnets]
         features = torch.cat(features, 1)
-        
         if self.old_fc is None:
             fc = self.new_fc
             out = fc(features)
@@ -639,13 +638,14 @@ class BEEFISONet(nn.Module):
                 new_fc_weight = torch.cat([self.backward_prototypes.weight[i].unsqueeze(0),new_fc_weight],dim=0)
                 new_fc_bias = torch.cat([self.backward_prototypes.bias[i].unsqueeze(0), new_fc_bias])
             out["train_logits"] = features[:,-self.out_dim:]@new_fc_weight.permute(1,0)+new_fc_bias 
+        out["features"]  = features
         out.update({"eval_logits": out["logits"],"energy_logits":self.forward_prototypes(features[:,-self.out_dim:])["logits"]})
         return out
 
     def update_fc_before(self, nb_classes):
         new_task_size = nb_classes - sum(self.task_sizes)
         self.biases = nn.ModuleList([BiasLayer() for i in range(len(self.task_sizes))])
-        self.convnets.append(get_convnet(self.args))
+        self.convnets.append(get_convnet(self.args,pretrained=self.pretrained))
         if self.out_dim is None:
             self.out_dim = self.convnets[-1].out_dim
         if self.new_fc is not None:

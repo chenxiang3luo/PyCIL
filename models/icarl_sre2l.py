@@ -78,23 +78,21 @@ class iCaRL_Sre2L(BaseLearner):
             "Learning on {}-{}".format(self._known_classes, self._total_classes)
         )
         if self._get_memory() is not None:
-            train_dataset,syn_dataset = data_manager.get_dataset(
+            train_dataset = data_manager.get_dataset(
                 np.arange(self._known_classes, self._total_classes),
                 source="train",
                 mode="train",
                 appendent=self._get_memory(),
-                is_dd = True
             )
-            self.syn_loader = DataLoader(
-                syn_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
-            )
+            # self.syn_loader = DataLoader(
+            #     syn_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
+            # )
         else:
             train_dataset = data_manager.get_dataset(
                 np.arange(self._known_classes, self._total_classes),
                 source="train",
                 mode="train",
                 appendent=self._get_memory(),
-                is_dd = True
             )
 
 
@@ -114,20 +112,20 @@ class iCaRL_Sre2L(BaseLearner):
 
         if len(self._multiple_gpus) > 1:
             self._network = nn.DataParallel(self._network, self._multiple_gpus)
-        self._train(self.train_loader,self.syn_loader, self.test_loader)
+        self._train(self.train_loader, self.test_loader)
         self._old_network = self._network.copy().freeze()
         self.build_rehearsal_memory(data_manager, self.samples_per_class)
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
 
-    def _train(self, train_loader,syn_loader, test_loader,use_pretrained=False):
+    def _train(self, train_loader, test_loader,use_pretrained=True):
         self._network.to(self._device)
         if self._old_network is not None:
             self._old_network.to(self._device)
 
         if self._cur_task == 0:
             if use_pretrained:
-                f = open('./ini_resnet18', 'rb')
+                f = open('./ini_resnet18_cifar100', 'rb')
                 self._network = pickle.load(f)
                 self._network.to(self._device)
                 return
@@ -153,7 +151,7 @@ class iCaRL_Sre2L(BaseLearner):
             scheduler = optim.lr_scheduler.MultiStepLR(
                 optimizer=optimizer, milestones=milestones, gamma=lrate_decay
             )
-            self._update_representation(train_loader,syn_loader, test_loader, optimizer, scheduler)
+            self._update_representation(train_loader, test_loader, optimizer, scheduler)
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(init_epoch))
@@ -201,7 +199,7 @@ class iCaRL_Sre2L(BaseLearner):
 
         logging.info(info)
 
-    def _update_representation(self, train_loader,syn_loader, test_loader, optimizer, scheduler):
+    def _update_representation(self, train_loader, test_loader, optimizer, scheduler):
         loss_function_kl = nn.KLDivLoss(reduction='batchmean')
         prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):
@@ -357,7 +355,6 @@ class iCaRL_Sre2L(BaseLearner):
         # Select
         # real_label = np.concatenate((self._targets_memory, targets)) if len(self._targets_memory) != 0 else targets
         real_label = targets
-
         syn_data, syn_lablel = self.dd.gen_synthetic_data(self._old_network,None,real_data,real_label,classes_range)
         syn_data = denormalize_cifar100(syn_data)
         syn_data = tensor2img(syn_data)

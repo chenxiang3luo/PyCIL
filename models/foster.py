@@ -19,7 +19,7 @@ class FOSTER(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
         self.args = args
-        self._network = FOSTERNet(args, False)
+        self._network = FOSTERNet(args, True)
         self._snet = None
         self.beta1 = args["beta1"]
         self.beta2 = args["beta2"]

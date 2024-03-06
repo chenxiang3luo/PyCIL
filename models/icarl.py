@@ -10,7 +10,7 @@ from models.base import BaseLearner
 from utils.inc_net import IncrementalNet
 from utils.inc_net import CosineIncrementalNet
 from utils.toolkit import target2onehot, tensor2numpy
-
+from modify_gsam import GSAM
 EPSILON = 1e-8
 
 init_epoch = 200
@@ -52,7 +52,7 @@ T = 2
 class iCaRL(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
-        self._network = IncrementalNet(args, False)
+        self._network = IncrementalNet(args, True)
 
     def after_task(self):
         self._old_network = self._network.copy().freeze()
@@ -96,7 +96,10 @@ class iCaRL(BaseLearner):
         self._network.to(self._device)
         if self._old_network is not None:
             self._old_network.to(self._device)
-
+        self.use_gsam = True
+        alpha = 0.1
+        old_rho = 0.04
+        adaptive = True
         if self._cur_task == 0:
             optimizer = optim.SGD(
                 self._network.parameters(),
@@ -104,10 +107,16 @@ class iCaRL(BaseLearner):
                 lr=init_lr,
                 weight_decay=init_weight_decay,
             )
+            if self.use_gsam:
+                gsam_optimizer = GSAM(self._network.parameters(), optimizer, [self._network], alpha, old_rho, adaptive=adaptive)
             scheduler = optim.lr_scheduler.MultiStepLR(
                 optimizer=optimizer, milestones=init_milestones, gamma=init_lr_decay
             )
-            self._init_train(train_loader, test_loader, optimizer, scheduler)
+            # scheduler = None
+            if self.use_gsam:
+                self._init_train(train_loader, test_loader, gsam_optimizer, scheduler)
+            else:
+                self._init_train(train_loader, test_loader, optimizer, scheduler)
         else:
             optimizer = optim.SGD(
                 self._network.parameters(),
@@ -115,10 +124,16 @@ class iCaRL(BaseLearner):
                 momentum=0.9,
                 weight_decay=weight_decay,
             )  # 1e-5
+            if self.use_gsam:
+                gsam_optimizer = GSAM(self._network.parameters(), optimizer, [self._network], alpha, old_rho, adaptive=adaptive)
+            # scheduler = None
             scheduler = optim.lr_scheduler.MultiStepLR(
                 optimizer=optimizer, milestones=milestones, gamma=lrate_decay
             )
-            self._update_representation(train_loader, test_loader, optimizer, scheduler)
+            if self.use_gsam:
+                self._update_representation(train_loader, test_loader, gsam_optimizer, scheduler)
+            else:
+                self._update_representation(train_loader, test_loader, optimizer, scheduler)
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(init_epoch))
@@ -139,8 +154,8 @@ class iCaRL(BaseLearner):
                 _, preds = torch.max(logits, dim=1)
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
-
-            scheduler.step()
+            if scheduler is not None: 
+                scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
 
             if epoch % 5 == 0:
@@ -165,7 +180,16 @@ class iCaRL(BaseLearner):
             prog_bar.set_description(info)
 
         logging.info(info)
-
+    def _global_update_backbone(self, ims, labels, old_model=None, release=False, loss_scale=1, old_class_only=False, cut_old_grad=False):
+        logits = self._network(ims)["logits"]
+        loss_clf = F.cross_entropy(logits, labels)
+        loss_kd = _KD_loss(
+            logits[:, : self._known_classes],
+            self._old_network(ims)["logits"],
+            T,
+        )
+        loss = loss_clf + loss_kd
+        return loss
     def _update_representation(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):
@@ -174,27 +198,30 @@ class iCaRL(BaseLearner):
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
-                logits = self._network(inputs)["logits"]
-
-                loss_clf = F.cross_entropy(logits, targets)
-                loss_kd = _KD_loss(
-                    logits[:, : self._known_classes],
-                    self._old_network(inputs)["logits"],
-                    T,
-                )
-
-                loss = loss_clf + loss_kd
-
-                optimizer.zero_grad()
-                loss.backward()
+                with torch.no_grad():
+                    logits = self._network(inputs)["logits"]
+                # loss_clf = F.cross_entropy(logits, targets)
+                # loss_kd = _KD_loss(
+                #     logits[:, : self._known_classes],
+                #     self._old_network(inputs)["logits"],
+                #     T,
+                # )
+    
+                if self.use_gsam:
+                    optimizer.set_closure(self._global_update_backbone , inputs, targets)
+                    loss = optimizer.calculate_grad()
+                else:
+                    loss = self._global_update_backbone(inputs, targets)
+                    loss.backward()
                 optimizer.step()
+                optimizer.zero_grad()
                 losses += loss.item()
 
                 _, preds = torch.max(logits, dim=1)
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
-
-            scheduler.step()
+            if scheduler is not None:
+                scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
             if epoch % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)

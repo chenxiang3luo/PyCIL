@@ -260,13 +260,23 @@ class ResNet(nn.Module):
         else:
             return self.layer4[-1].conv2
 
+def del_weight(dicts):
+    for i in ["bn1.running_mean", "bn1.running_var", "bn1.weight", "bn1.bias", "fc.weight", "fc.bias", "conv1.weight"]:
+        del dicts[i]
+
+def del_weight(dicts):
+    for i in ["bn1.running_mean", "bn1.running_var", "bn1.weight", "bn1.bias", "fc.weight", "fc.bias", "conv1.weight"]:
+        del dicts[i]
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
     model = ResNet(block, layers, **kwargs)
     if pretrained:
         state_dict = load_state_dict_from_url(model_urls[arch],
                                               progress=progress)
-        model.load_state_dict(state_dict)
+        need_dict = model.state_dict()
+        sd = {k:v for k,v in state_dict.items() if k in need_dict.keys()}
+        need_dict.update(sd)
+        model.load_state_dict(need_dict)
     return model
 
 def resnet10(pretrained=False, progress=True, **kwargs):

@@ -19,7 +19,7 @@ class BEEFISO(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
         self.args = args
-        self._network = BEEFISONet(args, False)
+        self._network = BEEFISONet(args, True)
         self._snet = None
         self.logits_alignment = args["logits_alignment"]
         self.val_loader = None
@@ -258,7 +258,7 @@ class BEEFISO(BaseLearner):
                 
                 train_logits[:, list(range(self._cur_task))] /= self.logits_alignment
                 loss_clf = F.cross_entropy(train_logits, pseudo_targets)
-                loss_fe = torch.tensor(0.).cuda()
+                loss_fe = torch.tensor(0.).cuda(self.args["device"][0])
                 loss_en = self.args["energy_weight"]  * self.get_energy_loss(inputs,targets,pseudo_targets)
                 loss = loss_clf + loss_fe + loss_en
                 optimizer.zero_grad()
@@ -321,8 +321,8 @@ class BEEFISO(BaseLearner):
                 )
                 
                 loss_clf = F.cross_entropy(logits,targets)                
-                loss_fe = torch.tensor(0.).cuda()
-                loss_kd = torch.tensor(0.).cuda()     
+                loss_fe = torch.tensor(0.).cuda(self.args["device"][0])
+                loss_kd = torch.tensor(0.).cuda(self.args["device"][0])     
                 loss = loss_clf + loss_fe + loss_kd
                 optimizer.zero_grad()
                 loss.backward()
