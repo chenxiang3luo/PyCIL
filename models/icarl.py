@@ -73,7 +73,7 @@ class iCaRL(BaseLearner):
             np.arange(self._known_classes, self._total_classes),
             source="train",
             mode="train",
-            appendent=self._get_memory(),
+            # appendent=self._get_memory(),
         )
         self.train_loader = DataLoader(
             train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
@@ -96,7 +96,7 @@ class iCaRL(BaseLearner):
         self._network.to(self._device)
         if self._old_network is not None:
             self._old_network.to(self._device)
-        self.use_gsam = True
+        self.use_gsam = False
         alpha = 0.1
         old_rho = 0.04
         adaptive = True
@@ -143,12 +143,18 @@ class iCaRL(BaseLearner):
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
-                logits = self._network(inputs)["logits"]
-
-                loss = F.cross_entropy(logits, targets)
-                optimizer.zero_grad()
-                loss.backward()
+                with torch.no_grad():
+                    logits = self._network(inputs)["logits"]
+                if self.use_gsam:
+                    optimizer.set_closure(self._global_update_init , inputs, targets)
+                    loss = optimizer.calculate_grad()
+                else:
+                    loss = self._global_update_init(inputs, targets)
+                    loss.backward()
+                
+                
                 optimizer.step()
+                optimizer.zero_grad()
                 losses += loss.item()
 
                 _, preds = torch.max(logits, dim=1)
@@ -190,6 +196,13 @@ class iCaRL(BaseLearner):
         )
         loss = loss_clf + loss_kd
         return loss
+
+
+    def _global_update_init(self, ims, labels, old_model=None, release=False, loss_scale=1, old_class_only=False, cut_old_grad=False):
+        logits = self._network(ims)["logits"]
+        loss = F.cross_entropy(logits, labels)
+        return loss
+    
     def _update_representation(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):

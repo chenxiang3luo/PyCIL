@@ -67,7 +67,7 @@ class iCaRL_DM(BaseLearner):
                 source="train",
                 mode="train",
                 appendent=self._get_memory(),
-                # is_dd = True
+                is_dd = True
             )
             # self.syn_loader = DataLoader(
             #     syn_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
@@ -78,7 +78,7 @@ class iCaRL_DM(BaseLearner):
                 source="train",
                 mode="train",
                 appendent=self._get_memory(),
-                # is_dd = True
+                is_dd = True
             )
 
 
@@ -206,34 +206,34 @@ class iCaRL_DM(BaseLearner):
                 
                 
                 # inner roop with sync data and real data 
-                # for i in range(1):
+                for i in range(1):
 
-                #     for j in range(3):
+                    for j in range(3):
                         
 
-                #         seed = int(time.time() * 1000) % 100000
-                #         inputs_syn, targets_syn = self.get_random_batch(batch_size)
-                #         # inputs_syn = DiffAugment(inputs_syn, self.dsa_strategy, seed=seed, param=self.dsa_param)
-                #         inputs_syn, targets_syn = inputs_syn.to(self._device), targets_syn.to(self._device)
-                #         logits = self._network(inputs_syn)["logits"]
+                        seed = int(time.time() * 1000) % 100000
+                        inputs_syn, targets_syn = self.get_random_batch(batch_size)
+                        # inputs_syn = DiffAugment(inputs_syn, self.dsa_strategy, seed=seed, param=self.dsa_param)
+                        inputs_syn, targets_syn = inputs_syn.to(self._device), targets_syn.to(self._device)
+                        logits = self._network(inputs_syn)["logits"]
 
-                #         loss_clf = F.cross_entropy(logits, targets_syn)
-                #         loss_kd = _KD_loss(
-                #             logits[:, : self._known_classes],
-                #             self._old_network(inputs_syn)["logits"],
-                #             T,
-                #         )
+                        loss_clf = F.cross_entropy(logits, targets_syn)
+                        loss_kd = _KD_loss(
+                            logits[:, : self._known_classes],
+                            self._old_network(inputs_syn)["logits"],
+                            T,
+                        )
 
-                #         loss = (loss_clf+loss_kd)
+                        loss = (loss_clf+loss_kd)
 
-                #         optimizer.zero_grad()
-                #         loss.backward()
-                #         optimizer.step()
-                #         losses += loss.item()
+                        optimizer.zero_grad()
+                        loss.backward()
+                        optimizer.step()
+                        losses += loss.item()
 
-                #         _, preds = torch.max(logits, dim=1)
-                #         correct += preds.eq(targets_syn.expand_as(preds)).cpu().sum()
-                #         total += len(targets_syn)
+                        _, preds = torch.max(logits, dim=1)
+                        correct += preds.eq(targets_syn.expand_as(preds)).cpu().sum()
+                        total += len(targets_syn)
 
 
                     # seed = int(time.time() * 1000) % 100000
@@ -348,7 +348,7 @@ class iCaRL_DM(BaseLearner):
         data, targets, _ = data_manager.get_dataset(classes_range
             ,
             source="train",
-            mode="train",
+            mode="test",
             ret_data=True,
         )
         mean = [0.5071, 0.4866, 0.4409]
@@ -429,7 +429,7 @@ class iCaRL_DM(BaseLearner):
             else exemplar_targets
             )
         
-    def build_rehearsal_memory(self, data_manager, per_class,is_dd=True,add_real = False):
+    def build_rehearsal_memory(self, data_manager, per_class,is_dd=False,add_real = False):
         if self._fixed_memory:
             if add_real:
                 self._construct_exemplar_random(data_manager, per_class)

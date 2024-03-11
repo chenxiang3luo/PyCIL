@@ -80,12 +80,13 @@ class DistributionMatching():
             print('initialize synthetic data from random noise')
         optimizer_img = torch.optim.SGD([image_syn, ], lr=lr_img, momentum=0.5) # optimizer_img for synthetic data
         optimizer_img.zero_grad()
+        net = old_model.copy()
+        net = net.to(self._device)
         for it in tqdm(range(Iteration+1)):
 
             ''' Train synthetic data '''
             # net = conv3(pretrained=False,args=self.args) # get a random model
-            net = old_model.copy()
-            net = net.to(self._device)
+            
             net.train()
             for param in list(net.parameters()):
                 param.requires_grad = False

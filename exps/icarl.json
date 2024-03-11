@@ -1,5 +1,5 @@
 {
-    "prefix": "resnet18_baseline",
+    "prefix": "resnet18_baseline_sgd",
     "dataset": "cifar100",
     "memory_size": 1000,
     "memory_per_class": 10,
@@ -9,7 +9,7 @@
     "increment": 10,
     "model_name": "icarl",
     "convnet_type": "resnet18",
-    "device": ["1"],
+    "device": ["2"],
     "seed": [1993]
 }
 

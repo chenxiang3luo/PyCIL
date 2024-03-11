@@ -73,6 +73,7 @@ class FOSTER_DM(BaseLearner):
             source="train",
             mode="train",
             appendent=self._get_memory(),
+            is_dd = True
         )
         self.train_loader = DataLoader(
             train_dataset,
@@ -131,10 +132,16 @@ class FOSTER_DM(BaseLearner):
             pickle.dump(self._network, f)
         else:
 
-            cls_num_list = [self.samples_old_class] * self._known_classes + [
+            # cls_num_list = [self.samples_old_class] * self._known_classes + [
+            #     self.samples_new_class(i)
+            #     for i in range(self._known_classes, self._total_classes)
+            # ]
+            n = 3
+            cls_num_list_new = [
                 self.samples_new_class(i)
                 for i in range(self._known_classes, self._total_classes)
             ]
+            cls_num_list = [n*np.sum(cls_num_list_new)/self._known_classes] * self._known_classes + cls_num_list_new
 
             effective_num = 1.0 - np.power(self.beta1, cls_num_list)
             per_cls_weights = (1.0 - self.beta1) / np.array(effective_num)
@@ -171,7 +178,6 @@ class FOSTER_DM(BaseLearner):
                 )
             else:
                 logging.info("do not weight align teacher!")
-
             cls_num_list = [self.samples_old_class] * self._known_classes + [
                 self.samples_new_class(i)
                 for i in range(self._known_classes, self._total_classes)
@@ -278,29 +284,43 @@ class FOSTER_DM(BaseLearner):
 
                 for i in range(1):
 
-                    for j in range(1):
+                    for j in range(3):
                         
 
                         seed = int(time.time() * 1000) % 100000
                         inputs_syn, targets_syn = self.get_random_batch(batch_size)
                         # inputs_syn = DiffAugment(inputs_syn, self.dsa_strategy, seed=seed, param=self.dsa_param)
                         inputs_syn, targets_syn = inputs_syn.to(self._device), targets_syn.to(self._device)
-                        logits = self._network(inputs_syn)["logits"]
-
-                        loss_clf = F.cross_entropy(logits, targets_syn)
-                        loss_kd = _KD_loss(
-                            logits[:, : self._known_classes],
-                            self._old_network(inputs_syn)["logits"],
-                            T,
+                        outputs = self._network(inputs_syn)
+                        logits, fe_logits, old_logits = (
+                            outputs["logits"],
+                            outputs["fe_logits"],
+                            outputs["old_logits"].detach(),
                         )
-
-                        loss = (loss_clf+loss_kd)
-
+                        loss_clf = F.cross_entropy(logits / self.per_cls_weights, targets_syn)
+                        loss_fe = F.cross_entropy(fe_logits, targets_syn)
+                        loss_kd = self.lambda_okd * _KD_loss(
+                            logits[:, : self._known_classes], old_logits, self.args["T"]
+                        )
+                        loss = loss_clf + loss_fe + loss_kd
                         optimizer.zero_grad()
                         loss.backward()
+                        if self.oofc == "az":
+                            for i, p in enumerate(self._network_module_ptr.fc.parameters()):
+                                if i == 0:
+                                    p.grad.data[
+                                        self._known_classes :,
+                                        : self._network_module_ptr.out_dim,
+                                    ] = torch.tensor(0.0)
+                        elif self.oofc != "ft":
+                            assert 0, "not implemented"
                         optimizer.step()
                         losses += loss.item()
-
+                        losses_fe += loss_fe.item()
+                        losses_clf += loss_clf.item()
+                        losses_kd += (
+                            self._known_classes / self._total_classes
+                        ) * loss_kd.item()
                         _, preds = torch.max(logits, dim=1)
                         correct += preds.eq(targets_syn.expand_as(preds)).cpu().sum()
                         total += len(targets_syn)
@@ -462,7 +482,7 @@ class FOSTER_DM(BaseLearner):
         data, targets, _ = data_manager.get_dataset(classes_range
             ,
             source="train",
-            mode="train",
+            mode="test",
             ret_data=True,
         )
         mean = [0.5071, 0.4866, 0.4409]

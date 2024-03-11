@@ -1,5 +1,5 @@
 {
-    "prefix": "cil_sre2l",
+    "prefix": "cil_dm_inner_n3",
     "dataset": "cifar100",
     "memory_size": 1000,
     "memory_per_class": 10,

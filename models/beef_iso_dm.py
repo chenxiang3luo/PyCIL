@@ -126,7 +126,7 @@ class BEEFISO_DM(BaseLearner):
         if self._cur_task >= 1:
             self._network_module_ptr.convnets[0].eval()
 
-    def _train(self, train_loader, test_loader, val_loader=None,use_pretrained=True):
+    def _train(self, train_loader, test_loader, val_loader=None,use_pretrained=False):
         self._network.to(self._device)
         if hasattr(self._network, "module"):
             self._network_module_ptr = self._network.module
@@ -713,7 +713,7 @@ class BEEFISO_DM(BaseLearner):
         data, targets, _ = data_manager.get_dataset(classes_range
             ,
             source="train",
-            mode="train",
+            mode="test",
             ret_data=True,
         )
         mean = [0.5071, 0.4866, 0.4409]

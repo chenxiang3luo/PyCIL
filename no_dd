@@ -1,0 +1,47 @@
+2024-03-11 05:08:53,424 [trainer.py] => config: ./exps/icarl_dm.json
+2024-03-11 05:08:53,424 [trainer.py] => prefix: 10real+inner
+2024-03-11 05:08:53,424 [trainer.py] => dataset: cifar100
+2024-03-11 05:08:53,424 [trainer.py] => memory_size: 1000
+2024-03-11 05:08:53,424 [trainer.py] => memory_per_class: 10
+2024-03-11 05:08:53,424 [trainer.py] => fixed_memory: True
+2024-03-11 05:08:53,424 [trainer.py] => shuffle: True
+2024-03-11 05:08:53,424 [trainer.py] => init_cls: 10
+2024-03-11 05:08:53,424 [trainer.py] => increment: 10
+2024-03-11 05:08:53,424 [trainer.py] => model_name: icarl_dm
+2024-03-11 05:08:53,424 [trainer.py] => convnet_type: resnet18
+2024-03-11 05:08:53,424 [trainer.py] => device: [device(type='cuda', index=2)]
+2024-03-11 05:08:53,424 [trainer.py] => seed: 1993
+Files already downloaded and verified
+Files already downloaded and verified
+2024-03-11 05:08:54,748 [data_manager.py] => [68, 56, 78, 8, 23, 84, 90, 65, 74, 76, 40, 89, 3, 92, 55, 9, 26, 80, 43, 38, 58, 70, 77, 1, 85, 19, 17, 50, 28, 53, 13, 81, 45, 82, 6, 59, 83, 16, 15, 44, 91, 41, 72, 60, 79, 52, 20, 10, 31, 54, 37, 95, 14, 71, 96, 98, 97, 2, 64, 66, 42, 22, 35, 86, 24, 34, 87, 21, 99, 0, 88, 27, 18, 94, 11, 12, 47, 25, 30, 46, 62, 69, 36, 61, 7, 63, 75, 5, 32, 4, 51, 48, 73, 93, 39, 67, 29, 49, 57, 33]
+2024-03-11 05:08:55,036 [trainer.py] => All params: 11168832
+2024-03-11 05:08:55,037 [trainer.py] => Trainable params: 11168832
+2024-03-11 05:08:55,037 [icarl_dm.py] => Learning on 0-10
+Traceback (most recent call last):
+  File "main.py", line 40, in <module>
+    main()
+  File "main.py", line 21, in main
+    train(args)
+  File "/home/chenxiang/PyCIL/trainer.py", line 19, in train
+    _train(args)
+  File "/home/chenxiang/PyCIL/trainer.py", line 68, in _train
+    model.incremental_train(data_manager)
+  File "/home/chenxiang/PyCIL/models/icarl_dm.py", line 101, in incremental_train
+    self._train(self.train_loader, self.test_loader)
+  File "/home/chenxiang/PyCIL/models/icarl_dm.py", line 115, in _train
+    self._network = pickle.load(f)
+  File "/home/chenxiang/anaconda3/envs/l2p/lib/python3.8/site-packages/torch/storage.py", line 222, in _load_from_bytes
+    return torch.load(io.BytesIO(b))
+  File "/home/chenxiang/anaconda3/envs/l2p/lib/python3.8/site-packages/torch/serialization.py", line 713, in load
+    return _legacy_load(opened_file, map_location, pickle_module, **pickle_load_args)
+  File "/home/chenxiang/anaconda3/envs/l2p/lib/python3.8/site-packages/torch/serialization.py", line 930, in _legacy_load
+    result = unpickler.load()
+  File "/home/chenxiang/anaconda3/envs/l2p/lib/python3.8/site-packages/torch/serialization.py", line 876, in persistent_load
+    wrap_storage=restore_location(obj, location),
+  File "/home/chenxiang/anaconda3/envs/l2p/lib/python3.8/site-packages/torch/serialization.py", line 175, in default_restore_location
+    result = fn(storage, location)
+  File "/home/chenxiang/anaconda3/envs/l2p/lib/python3.8/site-packages/torch/serialization.py", line 155, in _cuda_deserialize
+    return torch._UntypedStorage(obj.nbytes(), device=torch.device(location))
+  File "/home/chenxiang/anaconda3/envs/l2p/lib/python3.8/site-packages/torch/storage.py", line 23, in __init__
+    def __init__(self, *args, **kwargs): ...  # noqa: E704
+KeyboardInterrupt
