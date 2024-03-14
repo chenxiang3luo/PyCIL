@@ -339,7 +339,7 @@ class iCaRL_Sre2L(BaseLearner):
         data, targets, _ = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes)
             ,
             source="train",
-            mode="train",
+            mode="test",
             ret_data=True,
         )
         mean = [0.5071, 0.4866, 0.4409]

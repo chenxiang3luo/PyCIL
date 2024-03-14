@@ -178,10 +178,17 @@ class FOSTER_DM(BaseLearner):
                 )
             else:
                 logging.info("do not weight align teacher!")
-            cls_num_list = [self.samples_old_class] * self._known_classes + [
+            # cls_num_list = [self.samples_old_class] * self._known_classes + [
+            #     self.samples_new_class(i)
+            #     for i in range(self._known_classes, self._total_classes)
+            # ]
+            n = 3
+            cls_num_list_new = [
                 self.samples_new_class(i)
                 for i in range(self._known_classes, self._total_classes)
             ]
+            cls_num_list = [n*np.sum(cls_num_list_new)/self._known_classes] * self._known_classes + cls_num_list_new
+
             effective_num = 1.0 - np.power(self.beta2, cls_num_list)
             per_cls_weights = (1.0 - self.beta2) / np.array(effective_num)
             per_cls_weights = (
@@ -403,6 +410,30 @@ class FOSTER_DM(BaseLearner):
                 _, preds = torch.max(dark_logits[: targets.shape[0]], dim=1)
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
+                for i in range(1):
+
+                    for j in range(3):
+                        seed = int(time.time() * 1000) % 100000
+                        inputs_syn, targets_syn = self.get_random_batch(batch_size)
+                        # inputs_syn = DiffAugment(inputs_syn, self.dsa_strategy, seed=seed, param=self.dsa_param)
+                        inputs_syn, targets_syn = inputs_syn.to(self._device), targets_syn.to(self._device)
+                        dark_logits = self._snet(inputs_syn)["logits"]
+                        with torch.no_grad():
+                            outputs = self._network(inputs_syn)
+                            logits, old_logits, fe_logits = (
+                                outputs["logits"],
+                                outputs["old_logits"],
+                                outputs["fe_logits"],
+                            )
+                        loss_dark = self.BKD(dark_logits, logits, self.args["T"])
+                        loss = loss_dark
+                        optimizer.zero_grad()
+                        loss.backward()
+                        optimizer.step()
+                        losses += loss.item()
+                        _, preds = torch.max(dark_logits[: targets_syn.shape[0]], dim=1)
+                        correct += preds.eq(targets_syn.expand_as(preds)).cpu().sum()
+                        total += len(targets_syn)
             scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
             if epoch % 5 == 0:

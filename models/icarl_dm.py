@@ -208,7 +208,7 @@ class iCaRL_DM(BaseLearner):
                 # inner roop with sync data and real data 
                 for i in range(1):
 
-                    for j in range(3):
+                    for j in range(6):
                         
 
                         seed = int(time.time() * 1000) % 100000
@@ -429,7 +429,7 @@ class iCaRL_DM(BaseLearner):
             else exemplar_targets
             )
         
-    def build_rehearsal_memory(self, data_manager, per_class,is_dd=False,add_real = False):
+    def build_rehearsal_memory(self, data_manager, per_class,is_dd=True,add_real = False):
         if self._fixed_memory:
             if add_real:
                 self._construct_exemplar_random(data_manager, per_class)
