@@ -283,7 +283,7 @@ class FOSTER_SRE2L(BaseLearner):
                 if self.oofc == "az":
                     for i, p in enumerate(self._network_module_ptr.fc.parameters()):
                         if i == 0:
-                            p.grad.data[z
+                            p.grad.data[
                                 self._known_classes :,
                                 : self._network_module_ptr.out_dim,
                             ] = torch.tensor(0.0)

@@ -39,6 +39,7 @@ class FOSTER_DM(BaseLearner):
         self.wa_value = args["wa_value"]
         self.oofc = args["oofc"].lower()
         self.dd = DistributionMatching(args)
+        self.n = 3
     def after_task(self):
         self._known_classes = self._total_classes
         logging.info("Exemplar size: {}".format(self.exemplar_size))
@@ -136,12 +137,12 @@ class FOSTER_DM(BaseLearner):
             #     self.samples_new_class(i)
             #     for i in range(self._known_classes, self._total_classes)
             # ]
-            n = 3
+            
             cls_num_list_new = [
                 self.samples_new_class(i)
                 for i in range(self._known_classes, self._total_classes)
             ]
-            cls_num_list = [n*np.sum(cls_num_list_new)/self._known_classes] * self._known_classes + cls_num_list_new
+            cls_num_list = [self.n*np.sum(cls_num_list_new)/self._known_classes] * self._known_classes + cls_num_list_new
 
             effective_num = 1.0 - np.power(self.beta1, cls_num_list)
             per_cls_weights = (1.0 - self.beta1) / np.array(effective_num)
@@ -182,12 +183,11 @@ class FOSTER_DM(BaseLearner):
             #     self.samples_new_class(i)
             #     for i in range(self._known_classes, self._total_classes)
             # ]
-            n = 3
             cls_num_list_new = [
                 self.samples_new_class(i)
                 for i in range(self._known_classes, self._total_classes)
             ]
-            cls_num_list = [n*np.sum(cls_num_list_new)/self._known_classes] * self._known_classes + cls_num_list_new
+            cls_num_list = [self.n*np.sum(cls_num_list_new)/self._known_classes] * self._known_classes + cls_num_list_new
 
             effective_num = 1.0 - np.power(self.beta2, cls_num_list)
             per_cls_weights = (1.0 - self.beta2) / np.array(effective_num)
@@ -291,7 +291,7 @@ class FOSTER_DM(BaseLearner):
 
                 for i in range(1):
 
-                    for j in range(3):
+                    for j in range(self.n):
                         
 
                         seed = int(time.time() * 1000) % 100000
@@ -412,7 +412,7 @@ class FOSTER_DM(BaseLearner):
                 total += len(targets)
                 for i in range(1):
 
-                    for j in range(3):
+                    for j in range(self.n):
                         seed = int(time.time() * 1000) % 100000
                         inputs_syn, targets_syn = self.get_random_batch(batch_size)
                         # inputs_syn = DiffAugment(inputs_syn, self.dsa_strategy, seed=seed, param=self.dsa_param)

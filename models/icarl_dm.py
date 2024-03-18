@@ -18,8 +18,9 @@ from dd_algorithms.utils import DiffAugment,ParamDiffAug,get_time,save_images
 EPSILON = 1e-8
 from torchvision import datasets, transforms
 from torch.utils.data import ConcatDataset
+
 init_epoch = 200
-# init_epoch = 1
+init_epoch = 1
 init_lr = 0.01
 init_milestones = [60, 120, 170]
 init_lr_decay = 0.1
@@ -27,7 +28,7 @@ init_weight_decay = 0.0005
 
 
 epochs = 170
-# epochs = 1
+epochs = 1
 lrate = 0.01
 milestones = [80, 120]
 lrate_decay = 0.1
@@ -45,7 +46,6 @@ class iCaRL_DM(BaseLearner):
         self.dsa_param = ParamDiffAug()
         self.dsa_strategy = dsa_strategy
         self._real_data_memory, self._real_targets_memory = np.array([]),np.array([])
-
     def after_task(self):
         self._known_classes = self._total_classes
         
@@ -104,7 +104,7 @@ class iCaRL_DM(BaseLearner):
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
 
-    def _train(self, train_loader, test_loader,use_pretrained=True):
+    def _train(self, train_loader, test_loader,use_pretrained=False):
         self._network.to(self._device)
         if self._old_network is not None:
             self._old_network.to(self._device)
@@ -142,6 +142,7 @@ class iCaRL_DM(BaseLearner):
             self._update_representation(train_loader, test_loader, optimizer, scheduler)
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
+        self.models = []
         prog_bar = tqdm(range(init_epoch))
         self._network.to(self._device)
         for _, epoch in enumerate(prog_bar):
@@ -190,9 +191,11 @@ class iCaRL_DM(BaseLearner):
             prog_bar.set_description(info)
         # self._network.convnet.dual_ini(0)
         # self._network.convnet.dual_ini(1)
+            self.models.append(self._network.copy().freeze())
         logging.info(info)
 
     def _update_representation(self, train_loader, test_loader, optimizer, scheduler):
+        self.models = []
         prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):
             cnn_accy, nme_accy = self.eval_task()
@@ -338,9 +341,10 @@ class iCaRL_DM(BaseLearner):
                     train_acc,
                 )
             prog_bar.set_description(info)
+            self.models.append(self._network.copy().freeze())
         logging.info(info)
 
-    def _construct_exemplar_synthetic(self, data_manager, m):
+    def _construct_exemplar_synthetic(self, data_manager, m,add_selection = False):
         logging.info(
             "Constructing exemplars for new classes...({} for old classes)".format(m)
         )
@@ -364,7 +368,9 @@ class iCaRL_DM(BaseLearner):
         # Select
         # real_label = np.concatenate((self._targets_memory, targets)) if len(self._targets_memory) != 0 else targets
         real_label = targets
-        syn_data, syn_lablel = self.dd.gen_synthetic_data(self._old_network,None,real_data,real_label,classes_range)
+        syn_data, syn_lablel = self.dd.gen_synthetic_data(self._old_network,self.models,real_data,real_label,classes_range)
+        if add_selection:
+            self.dd.select_sample(real_data, real_label,syn_data,syn_lablel.cpu(),self._old_network,select_mode='greedy')
         syn_data = denormalize_cifar100(syn_data)
         syn_data = tensor2img(syn_data)
         syn_lablel = syn_lablel.cpu().numpy()
@@ -429,12 +435,10 @@ class iCaRL_DM(BaseLearner):
             else exemplar_targets
             )
         
-    def build_rehearsal_memory(self, data_manager, per_class,is_dd=True,add_real = False):
+    def build_rehearsal_memory(self, data_manager, per_class,is_dd=True,add_selection = True                            ):
         if self._fixed_memory:
-            if add_real:
-                self._construct_exemplar_random(data_manager, per_class)
             if is_dd:
-                self._construct_exemplar_synthetic(data_manager, per_class)
+                self._construct_exemplar_synthetic(data_manager, per_class,add_selection)
             else:
                 self._construct_exemplar_unified(data_manager, per_class)
         else:
