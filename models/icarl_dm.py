@@ -7,6 +7,8 @@ from torch import optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 import pickle
+import math
+from dd_algorithms.utils import EpisodicTensorDataset
 from PIL import Image
 from models.base import BaseLearner
 from utils.inc_net import IncrementalNet
@@ -19,18 +21,18 @@ EPSILON = 1e-8
 from torchvision import datasets, transforms
 from torch.utils.data import ConcatDataset
 
-init_epoch = 200
-init_epoch = 1
+init_epoch = 100
+# init_epoch = 1
 init_lr = 0.01
-init_milestones = [60, 120, 170]
+init_milestones = [30, 60, 85]
 init_lr_decay = 0.1
 init_weight_decay = 0.0005
+use_trajectory =True
 
-
-epochs = 170
-epochs = 1
+epochs = 100
+# epochs = 1
 lrate = 0.01
-milestones = [80, 120]
+milestones = [40, 60]
 lrate_decay = 0.1
 batch_size = 128
 weight_decay = 1e-5
@@ -38,6 +40,7 @@ num_workers = 8
 T = 2
 dsa_strategy = 'color_crop_cutout_flip_scale_rotate'
 stor_images = True
+
 class iCaRL_DM(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
@@ -45,6 +48,8 @@ class iCaRL_DM(BaseLearner):
         self.dd = DistributionMatching(args)
         self.dsa_param = ParamDiffAug()
         self.dsa_strategy = dsa_strategy
+        self.increment = args['increment']
+        self.inner_step = 0
         self._real_data_memory, self._real_targets_memory = np.array([]),np.array([])
     def after_task(self):
         self._known_classes = self._total_classes
@@ -101,6 +106,9 @@ class iCaRL_DM(BaseLearner):
         self._train(self.train_loader, self.test_loader)
         self._old_network = self._network.copy().freeze()
         self.build_rehearsal_memory(data_manager, self.samples_per_class)
+        # self.inner_step = max(self.inner_step,math.ceil((self._cur_task+1)*self.increment/8))
+        self.inner_step = 3
+
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
 
@@ -130,6 +138,7 @@ class iCaRL_DM(BaseLearner):
             f = open('./ini_resnet18_cifar100', 'wb')
             pickle.dump(self._network, f)
         else:
+            # exmp_dataset = EpisodicTensorDataset(buffer_examplers, buffer_labels, ids_per_batch, ims_per_id)
             optimizer = optim.SGD(
                 self._network.parameters(),
                 lr=lrate,
@@ -195,6 +204,7 @@ class iCaRL_DM(BaseLearner):
         logging.info(info)
 
     def _update_representation(self, train_loader, test_loader, optimizer, scheduler):
+        print(self.inner_step)
         self.models = []
         prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):
@@ -211,7 +221,7 @@ class iCaRL_DM(BaseLearner):
                 # inner roop with sync data and real data 
                 for i in range(1):
 
-                    for j in range(6):
+                    for j in range(self.inner_step):
                         
 
                         seed = int(time.time() * 1000) % 100000
@@ -370,12 +380,27 @@ class iCaRL_DM(BaseLearner):
         real_label = targets
         syn_data, syn_lablel = self.dd.gen_synthetic_data(self._old_network,self.models,real_data,real_label,classes_range)
         if add_selection:
-            self.dd.select_sample(real_data, real_label,syn_data,syn_lablel.cpu(),self._old_network,select_mode='greedy')
+            select_data,select_label = self.dd.select_sample(real_data, real_label,syn_data,syn_lablel.cpu(),self._old_network,select_mode='random')
+            select_data = denormalize_cifar100(select_data)
+            select_data = tensor2img(select_data)
+            if stor_images:
+                save_images(select_data, select_label,mode='select',arg='dm')
+            print(select_data.shape)
+            self._data_memory = (
+                np.concatenate((self._data_memory, select_data))
+                if len(self._data_memory) != 0
+                else select_data
+                )
+            self._targets_memory = (
+                np.concatenate((self._targets_memory, select_label))
+                if len(self._targets_memory) != 0
+                else select_label
+                )
         syn_data = denormalize_cifar100(syn_data)
         syn_data = tensor2img(syn_data)
         syn_lablel = syn_lablel.cpu().numpy()
         if stor_images:
-            save_images(syn_data, syn_lablel)
+            save_images(syn_data, syn_lablel,mode='syn',arg='dm')
         self._data_memory = (
             np.concatenate((self._data_memory, syn_data))
             if len(self._data_memory) != 0
@@ -435,7 +460,7 @@ class iCaRL_DM(BaseLearner):
             else exemplar_targets
             )
         
-    def build_rehearsal_memory(self, data_manager, per_class,is_dd=True,add_selection = True                            ):
+    def build_rehearsal_memory(self, data_manager, per_class,is_dd=True,add_selection = False                            ):
         if self._fixed_memory:
             if is_dd:
                 self._construct_exemplar_synthetic(data_manager, per_class,add_selection)

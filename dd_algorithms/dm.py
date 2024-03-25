@@ -5,7 +5,8 @@ import time
 from collections import defaultdict
 from copy import deepcopy
 from typing import Union
-
+from utils.toolkit import target2onehot, tensor2numpy,denormalize_cifar100,tensor2img
+from dd_algorithms.utils import DiffAugment,ParamDiffAug,get_time,save_images
 import numpy as np
 import torch
 import torch.multiprocessing as mp
@@ -26,13 +27,14 @@ from utils.inc_net import CosineIncrementalNet, IncrementalNet
 from utils.toolkit import target2onehot, tensor2numpy
 # todo
 Iteration = 10000
-Iteration = 1
+# Iteration = 1
 ipc = 10
 lr_img = 0.01
 lr_net = 0.01
 dsa_strategy = 'color_crop_cutout_flip_scale_rotate'
 BN  =True
-use_trajectory = False
+use_trajectory = True
+stor_images = True
 init = 'real'
 channel = 3 
 dsa = False if dsa_strategy in ['none', 'None'] else True
@@ -84,7 +86,15 @@ class DistributionMatching():
             print('initialize synthetic data from random real images')
             for c in class_range:
                 related_class = c-class_range[0]
-                image_syn.data[related_class*ipc:(related_class+1)*ipc] = get_images(c, ipc).detach().data
+                init_data = get_images(c, ipc).detach()
+                
+                if stor_images:
+                    tmp_data = init_data
+                    tmp_data = denormalize_cifar100(tmp_data)
+                    tmp_data = tensor2img(tmp_data)
+                    tmp_label = np.array([c] * ipc)
+                    save_images(tmp_data, tmp_label,mode = 'real',arg = 'dm')
+                image_syn.data[related_class*ipc:(related_class+1)*ipc] = init_data.data
         else:
             print('initialize synthetic data from random noise')
         optimizer_img = torch.optim.SGD([image_syn, ], lr=lr_img, momentum=0.5) # optimizer_img for synthetic data
@@ -194,7 +204,6 @@ class DistributionMatching():
                 data_index = current_data[label]
                 selected_index = random.sample(data_index, ipc)
                 tmp_examplers[label].append(real_data[selected_index])
-            print('-'*10+'Saving the Exemplars'+'-'*10)
             # self._save_memory()
         elif select_mode == 'greedy':
             labels_syn = sync_labels.long()
@@ -249,84 +258,127 @@ class DistributionMatching():
                 bar.finish()
             real_features = torch.cat(real_features, dim=0)
             
-            tmp_examplers = mp_model_greedy_select(ipc, net, deepcopy(sync_features), deepcopy(real_features), real_data, real_label)
+            # tmp_examplers = mp_model_greedy_select(ipc, net, deepcopy(sync_features), deepcopy(real_features), real_data, real_label)
+            tmp_examplers = greedy_select(ipc, net, deepcopy(sync_features), deepcopy(real_features), real_data, real_label)
+            model_load_state_dict(old_model, current_backbone_weight)
+            old_model.train(old_backbone_state)
 
         datas = []
         labels = []
         for key in tmp_examplers.keys():
-            datas.append(tmp_examplers)
+            datas.append(torch.stack((tmp_examplers[key])))
             labels.extend([key]*ipc)
-        model_load_state_dict(old_model, current_backbone_weight)
-        old_model.train(old_backbone_state)
         print(torch.cat(datas).shape,torch.tensor(labels).shape)
-        return torch.cat(datas),torch.tensor(labels)
+        return torch.cat(datas),torch.tensor(labels).numpy()
+    
+
+def greedy_select(img_per_class, net: Union[nn.Module, DataParallel], sync_features: torch.Tensor, real_features: torch.Tensor, real_data: torch.Tensor, real_label: torch.Tensor):
+    examplers = defaultdict(list)
+    real_label = real_label.cpu().tolist()
+    current_data = defaultdict(list)
+    for index, tmp_label in enumerate(real_label):
+        current_data[tmp_label].append(index)
+    current_label = list(current_data.keys())
+    class_num = len(current_label)
+    data_indexs = list(range(len(real_label)))
+    sync_mean_feature = torch.mean(sync_features, dim=0)
+    real_mean_feature = torch.mean(real_features, dim=0)
+    feature_num = len(sync_features)
+    bar = progressbar_tamplet('Greedy Selecting:', class_num*img_per_class)
+    for img_num in range(class_num*img_per_class):
+        min_dist = -1.0
+        choosed_index = -1
+        for current_index in range(len(data_indexs)):
+            index = data_indexs[current_index]
+            selected = real_features[index]
+            dist = torch.sum(((sync_mean_feature*feature_num + selected)/(feature_num+1) - real_mean_feature)**2).cpu().item()
+            if min_dist == -1.0 or dist < min_dist:
+                min_dist = dist
+                choosed_index = index
+                share_feature = deepcopy(selected)
+        idx = choosed_index
+        sync_mean_feature = (sync_mean_feature*feature_num + share_feature)/(feature_num+1)
+        feature_num += 1
+        tmp_label = real_label[idx]
+        examplers[tmp_label].append(real_data[idx].data.cpu())
+        data_indexs.remove(idx)
+        bar.update(img_num+1)
+        if len(examplers[tmp_label]) == img_per_class:
+            data_indexs[:] = list(set(data_indexs) - set(current_data[tmp_label]))
+    bar.finish()
+    return examplers
+
+
+
+
 
 def mp_model_greedy_select(img_per_class, net: Union[nn.Module, DataParallel], sync_features: torch.Tensor, real_features: torch.Tensor, real_data: torch.Tensor, real_label: torch.Tensor):
-        real_label = real_label.cpu().tolist()
-        current_data = defaultdict(list)
-        for index, tmp_label in enumerate(real_label):
-            current_data[tmp_label].append(index)
-        current_label = list(current_data.keys())
-        class_num = len(current_label)
-        real_data = real_data.share_memory_()
-        # init for multiprocess
-        examplers = defaultdict(list)
-        manager = mp.Manager()
-        lock = manager.Lock()
-        index_num = mp.Value('i', -1)
-        finish_num = mp.Value('i', -1)
-        min_dist = mp.Value('d', -1.0)
-        choosed_index = mp.Value('i', -1)
-        feature_num = mp.Value('i', len(sync_features))
-        share_data_indexs = manager.list(range(len(real_label)))
-        sync_mean_feature = torch.mean(sync_features, dim=0).share_memory_()
-        real_mean_feature = torch.mean(real_features, dim=0).share_memory_()
-        feature_share = torch.zeros_like(sync_mean_feature).to(sync_features.device)
-        feature_share = feature_share.share_memory_()
-        process_num = 8
-        all_process = None
-        event = manager.Event()
-        event.clear()
-        bar = progressbar_tamplet('Greedy Selecting:', class_num*img_per_class)
-        for img_num in range(class_num*img_per_class):
-            choosed_index.value = -1
-            min_dist.value = -1.0
-            index_num.value = -1
-            finish_num.value = -1
-            if all_process is None:
-                all_process = []
-                for _ in range(process_num):
-                    copy_net = deepcopy(net)
-                    copy_net.eval()
-                    set_zero_grad(copy_net)
+    real_label = real_label.cpu().tolist()
+    current_data = defaultdict(list)
+    for index, tmp_label in enumerate(real_label):
+        current_data[tmp_label].append(index)
+    current_label = list(current_data.keys())
+    class_num = len(current_label)
+    real_data = real_data.share_memory_()
+    # init for multiprocess
+    examplers = defaultdict(list)
+    manager = mp.Manager()
+    lock = manager.Lock()
+    index_num = mp.Value('i', -1)
+    finish_num = mp.Value('i', -1)
+    min_dist = mp.Value('d', -1.0)
+    choosed_index = mp.Value('i', -1)
+    feature_num = mp.Value('i', len(sync_features))
+    share_data_indexs = manager.list(range(len(real_label)))
+    sync_mean_feature = torch.mean(sync_features, dim=0).share_memory_()
+    real_mean_feature = torch.mean(real_features, dim=0).share_memory_()
+    feature_share = torch.zeros_like(sync_mean_feature).to(sync_features.device)
+    feature_share = feature_share.share_memory_()
+    process_num = 10
+    all_process = None
+    event = manager.Event()
+    event.clear()
+    bar = progressbar_tamplet('Greedy Selecting:', class_num*img_per_class)
+    for img_num in range(class_num*img_per_class):
+        choosed_index.value = -1
+        min_dist.value = -1.0
+        index_num.value = -1
+        finish_num.value = -1
+        if all_process is None:
+            all_process = []
+            for _ in range(process_num):
+                copy_net = deepcopy(net)
+                copy_net.eval()
+                set_zero_grad(copy_net)
 
-                    tmp_process = mp.Process(target=_model_greedy_select, args=(event, feature_num, index_num, finish_num, lock, share_data_indexs, real_data, sync_mean_feature, real_mean_feature, feature_share, copy_net, choosed_index, min_dist))
-                    all_process.append(tmp_process)
-                for tmp_process in all_process:
-                    tmp_process.start()
-            event.set()
-            while True:
-                if finish_num.value == len(share_data_indexs)-1:
-                    break
-
-            idx = choosed_index.value
-            # print(name)
-            tmp_mean_feature = (sync_mean_feature*feature_num.value + feature_share)/(feature_num.value+1)
-            sync_features[:] = tmp_mean_feature
-            feature_num.value += 1
-
-            examplers[real_label[idx]].append(real_data[idx].data.cpu())
-            share_data_indexs.remove(idx)
-            bar.update(img_num+1)
-            if len(examplers[tmp_label]) == img_per_class:
-                share_data_indexs[:] = list(set(share_data_indexs) - set(current_data[tmp_label]))
-        if all_process is not None:
+                tmp_process = mp.Process(target=_model_greedy_select, args=(event, feature_num, index_num, finish_num, lock, share_data_indexs, real_data, sync_mean_feature, real_mean_feature, feature_share, copy_net, choosed_index, min_dist))
+                all_process.append(tmp_process)
             for tmp_process in all_process:
-                tmp_process.terminate()
-            all_process = None
-            event.clear()
-        bar.finish()
-        return examplers
+                tmp_process.start()
+        event.set()
+        while True:
+            # print(finish_num.value, '==', len(share_data_indexs)-1, 'index=', index_num.value)
+            if finish_num.value == len(share_data_indexs)-1:
+                break
+
+        idx = choosed_index.value
+        # print(name)
+        tmp_mean_feature = (sync_mean_feature*feature_num.value + feature_share)/(feature_num.value+1)
+        sync_mean_feature[:] = tmp_mean_feature
+        feature_num.value += 1
+        tmp_label = real_label[idx]
+        examplers[tmp_label].append(real_data[idx].data.cpu())
+        share_data_indexs.remove(idx)
+        bar.update(img_num+1)
+        if len(examplers[tmp_label]) == img_per_class:
+            share_data_indexs[:] = list(set(share_data_indexs) - set(current_data[tmp_label]))
+    if all_process is not None:
+        for tmp_process in all_process:
+            tmp_process.terminate()
+        all_process = None
+        event.clear()
+    bar.finish()
+    return examplers
 
 
 
@@ -338,6 +390,7 @@ def _model_greedy_select(event, feature_num, index_num, finish_num, lock, data_i
             current_index = index_num.value
             if current_index >= len(data_indexs):
                 event.clear()
+                # print('Data Done')
                 continue
         index = data_indexs[current_index]
         data = real_data[index]
@@ -345,6 +398,7 @@ def _model_greedy_select(event, feature_num, index_num, finish_num, lock, data_i
             selected = net(data.unsqueeze(0).to(sync_mean_feature.device))['features'].detach()
         selected = selected.squeeze()
         dist = torch.sum(((sync_mean_feature*feature_num.value + selected)/(feature_num.value+1) - real_mean_feature)**2).cpu().item()
+        # print("dist:", dist)
         with lock:
             if min_dist.value == -1.0 or dist < min_dist.value:
                 min_dist.value = dist
