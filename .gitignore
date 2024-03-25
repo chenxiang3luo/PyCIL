@@ -1,3 +1,6 @@
 data/
 __pycache__/
+dd_algorithms/real_img/
+dd_algorithms/select_img/
+dd_algorithms/syn_img/
 logs/
