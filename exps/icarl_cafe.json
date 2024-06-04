@@ -1,0 +1,19 @@
+{
+    "prefix": "test_real10_inner_1_store_trajectory_noselection",
+    "dataset": "cifar100",
+    "memory_size": 1000,
+    "memory_per_class": 10,
+    "add_selection":false,
+    "fixed_memory": true,
+    "selection":"random",
+    "num_selection":0,
+    "use_trajectory":true,
+    "shuffle": true,
+    "init_cls": 10,
+    "increment": 10,
+    "model_name": "icarl_cafe",
+    "convnet_type": "resnet18",
+    "device": ["3"],
+    "seed": [1993]
+}
+

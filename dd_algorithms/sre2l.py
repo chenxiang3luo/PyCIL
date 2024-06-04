@@ -16,6 +16,18 @@ import copy
 import time
 
 
+class MyClass:
+    pass
+my = MyClass()
+temperature = 2
+use_fp16 = True
+gradient_accumulation_steps = 2
+my.mix_type = 'cutmix'
+my.cutmix = 1.0
+my.mode= 'fkd_save'
+my.device = 'cuda:2'
+fkd_batch = 20
+fkd_epoch = 170
 # todo
 Iteration = 4000
 # Iteration = 1
@@ -29,19 +41,25 @@ l2_scale = 0.0000
 im_size= [32,32]
 batch_size = 64
 r_bn = 0.01
+ini = 'no_real'
+# sharing_strategy = "file_system"
+# torch.multiprocessing.set_sharing_strategy(sharing_strategy)
 
-sharing_strategy = "file_system"
-torch.multiprocessing.set_sharing_strategy(sharing_strategy)
-
-def set_worker_sharing_strategy(worker_id: int) -> None:
-    torch.multiprocessing.set_sharing_strategy(sharing_strategy)
+# def set_worker_sharing_strategy(worker_id: int) -> None:
+#     torch.multiprocessing.set_sharing_strategy(sharing_strategy)
 
 class SRe2L():
     def __init__(self, args):
 
         self._device = args["device"][0]
-    def gen_synthetic_data(self,old_model,initial_data,real_data,real_label,class_range):
-        
+    def gen_synthetic_data(self,old_model,initial_data,initial_label,real_data,real_label,class_range):
+        label_to_images = {}
+        for label, image in zip(initial_label,initial_data):
+            if label in label_to_images:
+                label_to_images[label].append(image)
+            else:
+                label_to_images[label] = [image]
+        print(label_to_images.keys())
         syn_img = []
         label_syn = []
         for ipc_id in range(ipc):
@@ -59,8 +77,15 @@ class SRe2L():
             for kk in range(0, num_class, batch_size):
                 targets = targets_all[kk:min(kk+batch_size,num_class)].to(self._device)
                 data_type = torch.float
-                inputs = torch.randn((targets.shape[0], channel, im_size[0], im_size[1]), requires_grad=True, device=self._device,
-                             dtype=data_type)
+                if ini == 'real':
+                    ini_data = []
+                    for j in targets:
+                        ini_data.append(label_to_images[j.item()][ipc_id])
+                    ini_data = np.array(ini_data)
+                    inputs = torch.tensor(ini_data,requires_grad=True, device=self._device,dtype=data_type)
+                else:
+                    inputs = torch.randn((targets.shape[0], channel, im_size[0], im_size[1]), requires_grad=True, device=self._device,
+                                dtype=data_type)
                 optimizer = optim.Adam([inputs], lr=lr, betas=[0.5, 0.9], eps = 1e-8)
                 lr_scheduler = lr_cosine_policy(lr, 0, Iteration)
                 criterion = nn.CrossEntropyLoss()
@@ -124,3 +149,90 @@ class SRe2L():
 
         return [copy.deepcopy(torch.cat(syn_img).detach().cpu()),copy.deepcopy(torch.cat(label_syn).detach().cpu())]
     
+    def gen_soft_label(self,model,syn_img,syn_label,num_exist_syn):
+        soft_labels_epoches = []
+        coords_epoches = []
+        flip_epoches = []
+        mix_indexs_epoches = [] 
+        mix_lams_epoches = []
+        mix_bboxs_epoches = []
+        batch2img_epoches = []
+        normalize = transforms.Normalize(mean = [0.5071, 0.4866, 0.4409],
+        std = [0.2673, 0.2564, 0.2762])
+        transform=ComposeWithCoords(transforms=[
+            RandomResizedCropWithCoords(size=32,
+                                        scale=(0.08,
+                                               1),
+                                        interpolation=InterpolationMode.BILINEAR),
+            RandomHorizontalFlipWithRes(),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        train_dataset = myDataset(syn_img, syn_label, transform)
+        # generator = torch.Generator()
+        # generator.manual_seed(1993)
+        # sampler = torch.utils.data.RandomSampler(train_dataset, generator=generator)
+        train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=fkd_batch, shuffle=True,
+        num_workers=4, pin_memory=True)
+        model.eval()
+        for epoch in tqdm(range(fkd_epoch)):
+            coords = []
+            flip = []
+            mix_indexs = []
+            mix_indexs = []
+            mix_indexs = []
+            mix_lams = []
+            mix_bboxs = []
+            soft_labels = []
+            batch2imgs = []
+            # data = [transform(Image.fromarray(img), None, None) for img in syn_img]
+            # transposed = list(zip(*data))
+            # sample_new, flip_status, coords_status = transposed[0],transposed[1],transposed[2]
+            
+            # sample_new = torch.stack(sample_new)
+            # coords_status = torch.stack(coords_status)
+            # flip_status = list(flip_status)
+            # flip_status = torch.stack(flip_status)
+            for batch_idx, (images, target, flip_status, coords_status,batch2img) in enumerate(train_loader):
+                # print(images.shape) # [batch_size, 3, 224, 224]
+                # print(flip_status.shape) # [batch_size,]
+                # print(coords_status.shape) # [batch_size, 4]
+                # print(batch2img)
+                images = images.cuda(my.device)
+                images, mix_index, mix_lam, mix_bbox = mix_aug(images,args=my)
+                output = model(images)
+                coords.append(coords_status.numpy())
+                flip.append(flip_status.numpy())
+                mix_indexs.append(mix_index.numpy())
+                mix_lams.append(mix_lam)
+                mix_bboxs.append(mix_bbox)
+                soft_labels.append(output['logits'].cpu().numpy())
+                batch2imgs.append(batch2img.numpy() + num_exist_syn)
+            soft_labels_epoches.append(soft_labels)
+            coords_epoches.append(coords)
+            flip_epoches.append(flip)
+            mix_indexs_epoches.append(mix_indexs)
+            mix_lams_epoches.append(mix_lams)
+            mix_bboxs_epoches .append(mix_bboxs)
+            batch2img_epoches.append(batch2imgs)
+        return coords_epoches,flip_epoches,mix_indexs_epoches,mix_lams_epoches,mix_bboxs_epoches,soft_labels_epoches,batch2img_epoches
+
+
+class myDataset(Dataset):
+    def __init__(self, images, labels, trsf, use_path=False):
+        assert len(images) == len(labels), "Data size error!"
+        self.images = images
+        self.labels = labels
+        self.trsf = trsf
+        self.use_path = use_path
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        if self.trsf is not None:
+            sample_new, flip_status, coords_status = self.trsf(Image.fromarray(self.images[idx]), None, None)
+        label = self.labels[idx]
+
+        return sample_new, label, flip_status, coords_status,idx

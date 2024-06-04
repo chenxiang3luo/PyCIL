@@ -1,15 +1,19 @@
 {
-    "prefix": "test_syn10_inner",
-    "dataset": "cifar100",
-    "memory_size": 1000,
+    "prefix": "(iCarl+DM-Res18)-Tinyimagenet200-base100-phase10_(20_hybrid-inner=1)",
+    "dataset": "tinyimagenet200",
+    "memory_size": 4000,
     "memory_per_class": 10,
+    "num_selection":10,
+    "use_dd": true,
+    "inner_step": 1,
     "fixed_memory": true,
     "shuffle": true,
-    "init_cls": 10,
+    "init_cls": 100,
     "increment": 10,
     "model_name": "icarl_dm",
     "convnet_type": "resnet18",
-    "device": ["3"],
-    "seed": [1993]
+    "device": ["2"],
+    "seed": [1993],
+    "selection":"greedy",
+    "use_trajectory":true
 }
-

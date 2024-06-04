@@ -1,33 +1,52 @@
 import copy
 import logging
-import numpy as np
-from tqdm import tqdm
-import torch
-from torch import nn
-from torch import optim
-from torch.nn import functional as F
-from torch.utils.data import DataLoader
-from models.base import BaseLearner
-from utils.inc_net import BEEFISONet
-from utils.toolkit import count_parameters, target2onehot, tensor2numpy
 import pickle
-from models.base import BaseLearner
-from utils.inc_net import IncrementalNet
-from utils.inc_net import CosineIncrementalNet
-from utils.toolkit import target2onehot, tensor2numpy,denormalize_cifar100,tensor2img
-from dd_algorithms.dm import DistributionMatching
 import time
-from dd_algorithms.utils import DiffAugment,ParamDiffAug,get_time,save_images
+from copy import deepcopy
+from multiprocessing import Pool
+import numpy as np
+import torch
+from dd_algorithms.dm import DistributionMatching
+from dd_algorithms.utils import (DiffAugment, ParamDiffAug, get_time,
+                                 save_images)
+from models.base import BaseLearner
+from PIL import Image
+from torch import nn, optim
+from torch.nn import functional as F
+from torch.utils.data import ConcatDataset, DataLoader
 from torchvision import datasets, transforms
-from torch.utils.data import ConcatDataset
-EPSILON = 1e-8
-stor_images = False
+from tqdm import tqdm
+from utils.data_manager import pil_loader
+from utils.inc_net import BEEFISONet, CosineIncrementalNet, IncrementalNet
+from utils.toolkit import (count_parameters, denormalize_cifar100,denormalize_imageNet,
+                           target2onehot, tensor2img, tensor2numpy)
+from utils.data_manager import DummyDataset,RepeatSampler
 
+EPSILON = 1e-8
+stor_images = True
+batch_size = 128
 class BEEFISO_DM(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
         self.args = args
+        init_cls = 0 if args["init_cls"] == args["increment"] else args["init_cls"]
+        self.path = "logs/{}/{}/{}/{}/{}_{}_{}_{}_{}".format(
+            args["model_name"],
+            args["dataset"],
+            init_cls,
+            args["increment"],
+            args["prefix"],
+            args["selection"],
+            args["num_selection"],
+            args["seed"],
+            args["convnet_type"],
+        )
+        self.datasets = args["dataset"]
         self._network = BEEFISONet(args, True)
+        self.num_selection = args["num_selection"] 
+        self.is_dd = args["use_dd"]
+        self.use_trajectory = args["use_trajectory"] 
+        self.selection = args["selection"]
         self._snet = None
         self.logits_alignment = args["logits_alignment"]
         self.val_loader = None
@@ -35,11 +54,13 @@ class BEEFISO_DM(BaseLearner):
         self.random = args.get("random",None)
         self.imbalance = args.get("imbalance",None)
         self.dd = DistributionMatching(args)
+        self.models = []
+        self.inner_step = args['inner_step']
     def after_task(self):
         self._network_module_ptr.update_fc_after()
         self._known_classes = self._total_classes
         if self.reduce_batch_size:
-            if self._cur_task == 0:
+            if self._cur_task == 0: 
                 self.args["batch_size"] = self.args["batch_size"]
             else:
                 self.args["batch_size"] = self.args["batch_size"] * (self._cur_task+1) // (self._cur_task+2) 
@@ -64,8 +85,8 @@ class BEEFISO_DM(BaseLearner):
             for id in range(self._cur_task):
                 for p in self._network.convnets[id].parameters():
                     p.requires_grad = False
-            # for p in self._network.old_fc.parameters():
-            #     p.requires_grad = False
+            for p in self._network.old_fc.parameters():
+                p.requires_grad = False
 
 
         logging.info("All params: {}".format(count_parameters(self._network)))
@@ -116,7 +137,7 @@ class BEEFISO_DM(BaseLearner):
         if self.random or self.imbalance:
             self.build_rehearsal_memory_imbalance(data_manager,self.samples_per_class)
         else:
-            self.build_rehearsal_memory(data_manager, self.samples_per_class)
+            self.build_rehearsal_memory(data_manager, self.samples_per_class, is_dd=self.is_dd, num_selection = self.num_selection)
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
 
@@ -132,11 +153,11 @@ class BEEFISO_DM(BaseLearner):
             self._network_module_ptr = self._network.module
         if self._cur_task == 0:
             if use_pretrained:
-                f = open('./ini_resnet18_cifar100_beef', 'rb')
-                self._network = pickle.load(f)
-                # self._network.convnet.dual_ini(0)
-                # self._network.convnet.dual_ini(1)
-                self._network.to(self._device)
+                with open('./ini_beef_tiny_half', 'rb') as f:
+                    self._network = pickle.load(f)
+                    self._network.to(self._device)
+                with open('./ini_beef_tiny_half_models', 'rb') as f:
+                    self.models = pickle.load(f)
                 return
             optimizer = optim.SGD(
                 filter(lambda p: p.requires_grad, self._network.parameters()),
@@ -149,8 +170,11 @@ class BEEFISO_DM(BaseLearner):
             )
             self.epochs = self.args["init_epochs"]
             self._init_train(train_loader, test_loader, optimizer, scheduler)
-            f = open('./ini_resnet18_cifar100_beef', 'wb')
-            pickle.dump(self._network, f)
+            with open('./ini_beef_tiny_half', 'wb') as f:
+                pickle.dump(self._network.cpu(), f)
+            with open('./ini_beef_tiny_half_models', 'wb') as f:
+                pickle.dump(self.models, f)
+            self._network.to(self._device)
         else:
 
             optimizer = optim.SGD(
@@ -199,6 +223,8 @@ class BEEFISO_DM(BaseLearner):
             self._fusion(val_loader,test_loader,optimizer,scheduler)
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
+        if self.use_trajectory:
+            self.models = []
         prog_bar = tqdm(range(self.epochs))
         for _, epoch in enumerate(prog_bar):
             self.train()
@@ -221,10 +247,12 @@ class BEEFISO_DM(BaseLearner):
                 _, preds = torch.max(logits, dim=1)
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
+            if self.use_trajectory:
+                self.models.append(self._network.copy().freeze().to('cpu'))
             scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
             
-            if epoch % 5 == 0:
+            if epoch+1 % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
                 info = "Task {}, Epoch {}/{} => Loss {:.3f}, Loss_en {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
                     self._cur_task,
@@ -246,10 +274,14 @@ class BEEFISO_DM(BaseLearner):
                 )
 
             prog_bar.set_description(info)
-            logging.info(info)
+        logging.info(info)
 
     def _expansion(self, train_loader, test_loader, optimizer, scheduler):
+        if self.use_trajectory:
+            self.models = []
         prog_bar = tqdm(range(self.epochs))
+        syn_loader = self.get_random_loader(batch_size)
+        syn_loader_iter = iter(syn_loader)
         for _, epoch in enumerate(prog_bar):
             self.train()
             losses = 0.0
@@ -257,7 +289,47 @@ class BEEFISO_DM(BaseLearner):
             losses_fe = 0.0
             losses_en = 0.0
             correct, total = 0, 0
+
+            
             for i, (_, inputs, targets) in enumerate(train_loader):
+                
+                for j in range(self.inner_step):
+                    # inputs_syn, targets_syn = self.get_random_batch(
+                    #         batch_size)
+                    _, inputs_syn, targets_syn = next(syn_loader_iter)
+                    inputs_syn, targets_syn = inputs_syn.to(
+                        self._device, non_blocking=True
+                    ), targets_syn.to(self._device, non_blocking=True)
+                    outputs = self._network(inputs_syn)
+                    logits,train_logits = (
+                        outputs["logits"],
+                        outputs["train_logits"]
+                    )
+                    pseudo_targets = targets_syn.clone()
+                    for task_id in range(self._cur_task+1):
+                        if task_id == 0:
+                            pseudo_targets = torch.where(targets_syn<self.data_manager.get_accumulate_tasksize(task_id),task_id,pseudo_targets)
+                        elif task_id == self._cur_task: 
+                            pseudo_targets = torch.where(targets_syn-self._known_classes+1>0,targets_syn-self._known_classes+task_id,pseudo_targets)
+                        else:
+                            pseudo_targets = torch.where((targets_syn<self.data_manager.get_accumulate_tasksize(task_id)) & (targets_syn>self.data_manager.get_accumulate_tasksize(task_id-1)-1),task_id,pseudo_targets)
+                    
+                    train_logits[:, list(range(self._cur_task))] /= self.logits_alignment
+                    loss_clf = F.cross_entropy(train_logits, pseudo_targets)
+                    loss_fe = torch.tensor(0.).cuda(self.args["device"][0])
+                    loss_en = self.args["energy_weight"]  * self.get_energy_loss(inputs_syn,targets_syn,pseudo_targets)
+                    loss = loss_clf + loss_fe + loss_en
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    losses += loss.item()
+                    losses_fe += loss_fe.item()
+                    losses_clf += loss_clf.item()
+                    losses_en += loss_en.item()
+                    _, preds = torch.max(logits, dim=1)
+                    correct += preds.eq(targets_syn.expand_as(preds)).cpu().sum()
+                    total += len(targets_syn)
+
                 inputs, targets = inputs.to(
                     self._device, non_blocking=True
                 ), targets.to(self._device, non_blocking=True)
@@ -290,9 +362,12 @@ class BEEFISO_DM(BaseLearner):
                 _, preds = torch.max(logits, dim=1)
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
+                
+            if self.use_trajectory:
+                self.models.append(self._network.copy().freeze().to('cpu'))
             scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
-            if epoch % 5 == 0:
+            if epoch+1 % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
                 info = "Task {}, Epoch {}/{} => Loss {:.3f}, Loss_clf {:.3f}, Loss_fe {:.3f}, Loss_en {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
                     self._cur_task,
@@ -317,7 +392,7 @@ class BEEFISO_DM(BaseLearner):
                     train_acc,
                 )
             prog_bar.set_description(info)
-            logging.info(info)
+        logging.info(info)
             
     def _fusion(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(self.epochs))
@@ -330,6 +405,36 @@ class BEEFISO_DM(BaseLearner):
             losses_kd = 0.0
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
+
+                # for j in range(self.inner_step):
+                #     inputs_syn, targets_syn = self.get_random_batch(
+                #             batch_size)
+                #     inputs_syn, targets_syn = inputs_syn.to(
+                #         self._device, non_blocking=True
+                #     ), targets_syn.to(self._device, non_blocking=True)
+                #     outputs = self._network(inputs_syn)
+                #     logits,train_logits = (
+                #         outputs["logits"],
+                #         outputs["train_logits"]
+                #     )
+                    
+                #     loss_clf = F.cross_entropy(logits,targets_syn)                
+                #     loss_fe = torch.tensor(0.).cuda(self.args["device"][0])
+                #     loss_kd = torch.tensor(0.).cuda(self.args["device"][0])     
+                #     loss = loss_clf + loss_fe + loss_kd
+                #     optimizer.zero_grad()
+                #     loss.backward()
+                #     optimizer.step()
+                #     losses += loss.item()
+                #     losses_fe += loss_fe.item()
+                #     losses_clf += loss_clf.item()
+                #     losses_kd += (
+                #         self._known_classes / self._total_classes
+                #     ) * loss_kd.item()
+                #     _, preds = torch.max(logits, dim=1)
+                #     correct += preds.eq(targets_syn.expand_as(preds)).cpu().sum()
+                #     total += len(targets_syn)
+
                 inputs, targets = inputs.to(
                     self._device, non_blocking=True
                 ), targets.to(self._device, non_blocking=True)
@@ -357,7 +462,7 @@ class BEEFISO_DM(BaseLearner):
                 total += len(targets)
             scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
-            if epoch % 5 == 0:
+            if epoch+1 % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
                 info = "Task {}, Epoch {}/{} => Loss {:.3f}, Loss_clf {:.3f}, Loss_fe {:.3f}, Loss_kd {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
                     self._cur_task,
@@ -382,13 +487,13 @@ class BEEFISO_DM(BaseLearner):
                     train_acc,
                 )
             prog_bar.set_description(info)
-            logging.info(info)
+        logging.info(info)
 
 
     @property
     def samples_old_class(self):
         if self._fixed_memory:
-            return self._memory_per_class
+            return self._memory_per_class + self.num_selection
         else:
             assert self._total_classes != 0, "Total classes is 0"
             return self._memory_size // self._known_classes
@@ -459,10 +564,10 @@ class BEEFISO_DM(BaseLearner):
             self._reduce_exemplar_imbalance(data_manager, per_class,self.random,self.imbalance)
             self._construct_exemplar_imbalance(data_manager, per_class,self.random,self.imbalance)
             
-    def build_rehearsal_memory(self, data_manager, per_class,is_dd=True):
+    def build_rehearsal_memory(self, data_manager, per_class,is_dd=True, num_selection=0):
         if self._fixed_memory:
             if is_dd:
-                self._construct_exemplar_synthetic(data_manager, per_class)
+                self._construct_exemplar_synthetic(data_manager, per_class, num_selection)
             else:
                 self._construct_exemplar_unified(data_manager, per_class)
         else:
@@ -508,7 +613,7 @@ class BEEFISO_DM(BaseLearner):
             selected_targets = []
             logging.info("Contructing exmplars, totally random...({} total instances  {} classes)".format(increment*m, increment))
             data, targets, idx_dataset = data_manager.get_dataset(np.arange(self._known_classes,self._total_classes),source="train",mode="test",ret_data=True)
-            selected_indices = np.random.choice(list(range(len(data))),m*increment,repladce=False)
+            selected_indices = np.random.choice(list(range(len(data))),m*increment,replace=False)
             for idx in selected_indices:
                 selected_exemplars.append(data[idx])
                 selected_targets.append(targets[idx])
@@ -705,36 +810,74 @@ class BEEFISO_DM(BaseLearner):
 
             self._class_means = _class_means
 
-    def _construct_exemplar_synthetic(self, data_manager, m):
+    def _construct_exemplar_synthetic(self, data_manager, m, num_selection:int):
         logging.info(
             "Constructing exemplars for new classes...({} for old classes)".format(m)
         )
         classes_range = np.arange(self._known_classes, self._total_classes)
-        data, targets, _ = data_manager.get_dataset(classes_range
-            ,
+        data, targets, _ = data_manager.get_dataset(classes_range,
             source="train",
             mode="test",
             ret_data=True,
         )
-        mean = [0.5071, 0.4866, 0.4409]
-        std = [0.2673, 0.2564, 0.2762]
         # task3
         # theta2 = (D1+T2,theta1)
         # D1+D2+T3   D2= (theta2,ran), D1 = (theta1,T1)
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)])
-        data = torch.stack([transform(img) for img in data]).numpy()
+        test_trsf = data_manager._test_trsf
+        common_trsf = data_manager._common_trsf
+        test_trsf = transforms.Compose([*test_trsf, *common_trsf])
+        if data_manager.use_path:
+            data = torch.stack([test_trsf(pil_loader(img)) for img in data]).numpy()
+        else:
+            data = torch.stack([test_trsf(img) for img in data]).numpy()
         # distill_data + task+data
         # real_data = np.concatenate((self._data_memory, data)) if len(self._data_memory) != 0 else data
         real_data = data
         # Select
         # real_label = np.concatenate((self._targets_memory, targets)) if len(self._targets_memory) != 0 else targets
         real_label = targets
-        syn_data, syn_lablel = self.dd.gen_synthetic_data(self._old_network,None,real_data,real_label,classes_range)
-        syn_data = denormalize_cifar100(syn_data)
+        syn_data, syn_lablel = self.dd.gen_synthetic_data(
+            m,self._old_network, self.models, real_data, real_label, classes_range, self.path,dataset_name = self.datasets,use_convents=True,use_trajectory=self.use_trajectory)
+        if num_selection > 0:
+            select_data, select_label = self.dd.select_sample(
+                real_data, real_label, syn_data, syn_lablel.cpu(), self._old_network, select_mode=self.selection,num_selection = num_selection)
+            if self.datasets == 'cifar100':
+                select_data = denormalize_cifar100(select_data)
+            elif self.datasets == 'tinyimagenet200':
+                select_data = denormalize_imageNet(select_data)
+            else:
+                select_data = denormalize_imageNet(select_data)
+            select_data = tensor2img(select_data)
+            if stor_images:
+                if data_manager.use_path:
+                    select_data = save_images(select_data, select_label,
+                                self.path, mode='select')
+                else:
+                    save_images(select_data, select_label,
+                                self.path, mode='select')
+            self._data_memory = (
+                np.concatenate((self._data_memory, select_data))
+                if len(self._data_memory) != 0
+                else select_data
+            )
+            self._targets_memory = (
+                np.concatenate((self._targets_memory, select_label))
+                if len(self._targets_memory) != 0
+                else select_label
+            )
+        if self.datasets == 'cifar100':
+            syn_data = denormalize_cifar100(syn_data)
+        elif self.datasets == 'tinyimagenet200':
+            syn_data = denormalize_imageNet(syn_data)
+        else:
+            syn_data = denormalize_imageNet(syn_data)
         syn_data = tensor2img(syn_data)
         syn_lablel = syn_lablel.cpu().numpy()
         if stor_images:
-            save_images(syn_data, syn_lablel)
+            if data_manager.use_path:
+                syn_data = save_images(syn_data, syn_lablel, self.path, mode='sync')
+            else:
+                save_images(syn_data, syn_lablel, self.path, mode='sync')
         self._data_memory = (
             np.concatenate((self._data_memory, syn_data))
             if len(self._data_memory) != 0
@@ -745,7 +888,7 @@ class BEEFISO_DM(BaseLearner):
             if len(self._targets_memory) != 0
             else syn_lablel
             )
-        
+
         # self._data_memory = (
         #     torch.cat((self._data_memory, syn_data))
         #     if len(self._data_memory) != 0
@@ -759,3 +902,45 @@ class BEEFISO_DM(BaseLearner):
 
         # self._data_memory = syn_data
         # self._targets_memory = syn_lablel
+
+    def get_random_batch(self, batch_size):
+        """Returns a random batch according to current valid size."""
+        global_bs = batch_size
+        # if global batch size > current valid size, we just sample with replacement
+        replace = False if len(self._targets_memory) >= global_bs else True
+
+        random_indices = np.random.choice(
+            np.arange(len(self._targets_memory)), size=global_bs, replace=replace)
+
+        image = self._data_memory[random_indices]
+        label = self._targets_memory[random_indices]
+        seed = int(time.time() * 1000) % 100000
+        # image = DiffAugment(image, self.dsa_strategy, seed=seed, param=self.dsa_param)
+        train_trsf = self.data_manager._train_trsf
+        common_trsf = self.data_manager._common_trsf
+        train_trsf = transforms.Compose([*train_trsf, *common_trsf])
+        if self.data_manager.use_path:
+            with Pool(8) as p:
+                image = p.map(pil_loader,image) 
+            image = torch.stack([train_trsf(img) for img in image])
+        else:
+            image = torch.stack([train_trsf(Image.fromarray(img)) for img in image])
+
+        # data = [train_trsf(Image.fromarray(img)) for img in image]
+        # image = torch.stack(data)
+        return [image, torch.tensor(label)]
+
+    def get_random_loader(self, batch_size):
+        """Returns a random batch according to current valid size."""
+        # if global batch size > current valid size, we just sample with replacement
+        replace = False if len(self._targets_memory) >= batch_size else True
+        train_trsf = self.data_manager._train_trsf
+        common_trsf = self.data_manager._common_trsf
+        trsf = transforms.Compose([*train_trsf, *common_trsf])
+        syn_dataset = DummyDataset(self._data_memory, self._targets_memory, trsf, self.data_manager.use_path)
+        repeat_sampler = RepeatSampler(len(syn_dataset), repeat=True,batch_size=batch_size)
+        syn_dataloader = DataLoader(syn_dataset, batch_size=batch_size, sampler=repeat_sampler, num_workers=8)
+
+        # data = [train_trsf(Image.fromarray(img)) for img in image]
+        # image = torch.stack(data)
+        return syn_dataloader

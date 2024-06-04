@@ -3,13 +3,13 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
-from utils.data import iCIFAR10, iCIFAR100, iImageNet100, iImageNet1000
+from utils.data import iCIFAR10, iCIFAR100, iImageNet100, iImageNet1000,iTinyImageNet200
 from tqdm import tqdm
 from torch.utils.data import ConcatDataset,Dataset
 import torch
 import time
 from dd_algorithms.utils import DiffAugment,ParamDiffAug,get_time
-
+from torch.utils.data import DataLoader, Dataset, Sampler
 class DataManager(object):
     def __init__(self, dataset_name, shuffle, seed, init_cls, increment):
         self.dataset_name = dataset_name
@@ -74,7 +74,6 @@ class DataManager(object):
     
             data.append(class_data)
             targets.append(class_targets)
-
         if appendent is not None and len(appendent) != 0:
             if not is_dd:
                 appendent_data, appendent_targets = appendent
@@ -87,7 +86,7 @@ class DataManager(object):
                 return DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path)
                 # return [DummyDataset(np.concatenate(data), np.concatenate(targets), trsf, self.use_path),None]
                 
-
+        
         data  = np.concatenate(data)
         targets = np.concatenate(targets)
         if ret_data:
@@ -314,6 +313,9 @@ def _get_idata(dataset_name):
         return iImageNet1000()
     elif name == "imagenet100":
         return iImageNet100()
+    elif name == "tinyimagenet200":
+        print("Load TinyImagenet200 data.")
+        return iTinyImageNet200()
     else:
         raise NotImplementedError("Unknown dataset {}.".format(dataset_name))
 
@@ -356,3 +358,21 @@ def default_loader(path):
         return accimage_loader(path)
     else:
         return pil_loader(path)
+
+
+class RepeatSampler(Sampler):
+    def __init__(self, num_samples, repeat=True, batch_size=128):
+        self.num_samples = num_samples
+        self.repeat = repeat
+        self.batch_size = batch_size
+    
+    def __iter__(self):
+        while True:
+            if self.repeat:
+                indices = np.random.randint(0, self.num_samples, size=self.batch_size)
+            else:
+                indices = np.random.permutation(self.num_samples)[:self.batch_size]
+            yield from indices
+    
+    def __len__(self):
+        return len(self.num_samples)

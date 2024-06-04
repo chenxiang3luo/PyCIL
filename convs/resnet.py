@@ -150,7 +150,7 @@ class ResNet(nn.Module):
         self.base_width = width_per_group
         
         assert args is not None, "you should pass args to resnet"
-        if 'cifar' in args["dataset"]:
+        if 'cifar' in args["dataset"] or 'tiny' in args["dataset"]:
             if args["model_name"] == "memo":
                 self.conv1 = nn.Sequential(
                     nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False),
@@ -246,7 +246,7 @@ class ResNet(nn.Module):
         # x = self.fc(x)
 
         return {
-            'fmaps': [x_1, x_2, x_3, x_4],
+            'fmaps': [x_4, x_3, x_2, x_1,x],
             'features': features
         }
 

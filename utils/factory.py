@@ -12,6 +12,12 @@ def get_model(model_name, args):
     elif name == "icarl_sre2l":
         from models.icarl_sre2l import iCaRL_Sre2L
         return iCaRL_Sre2L(args)
+    elif name == "icarl_cafe":
+        from models.icarl_cafe import iCaRL_CAFE
+        return iCaRL_CAFE(args)
+    elif name == "icarl_dam":
+        from models.icarl_dam import iCaRL_DataDAM
+        return iCaRL_DataDAM(args)
     elif name == "bic":
         from models.bic import BiC
         return BiC(args)

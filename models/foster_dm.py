@@ -9,11 +9,13 @@ from torch.utils.data import DataLoader
 from models.base import BaseLearner
 from utils.inc_net import FOSTERNet
 from utils.toolkit import count_parameters, target2onehot, tensor2numpy
-from utils.toolkit import target2onehot, tensor2numpy,denormalize_cifar100,tensor2img
+from utils.toolkit import target2onehot, tensor2numpy,denormalize_cifar100,denormalize_imageNet,tensor2img
 from dd_algorithms.dm import DistributionMatching
 from dd_algorithms.sre2l import SRe2L
+from utils.data_manager import pil_loader
 import time
 from PIL import Image
+import os
 import pickle
 from dd_algorithms.utils import DiffAugment,ParamDiffAug,get_time,save_images
 EPSILON = 1e-8
@@ -23,23 +25,41 @@ from torch.utils.data import ConcatDataset
 T = 2
 EPSILON = 1e-8
 batch_size = 128
+stor_images = True
 
 class FOSTER_DM(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
         self.args = args
+        init_cls = 0 if args["init_cls"] == args["increment"] else args["init_cls"]
         self._network = FOSTERNet(args, True)
         self._snet = None
         self.beta1 = args["beta1"]
         self.beta2 = args["beta2"]
+        self.is_dd = args["is_dd"]
         self.per_cls_weights = None
+        self.num_selection = args["num_selection"] 
+        self.use_trajectory = args["use_trajectory"] 
         self.is_teacher_wa = args["is_teacher_wa"]
         self.is_student_wa = args["is_student_wa"]
+        self.inner_step = 0
         self.lambda_okd = args["lambda_okd"]
         self.wa_value = args["wa_value"]
         self.oofc = args["oofc"].lower()
         self.dd = DistributionMatching(args)
-        self.n = 3
+        self.selection = args["selection"]
+        self.models = []
+        self.path = "logs/{}/{}/{}/{}/{}_{}_{}_{}".format(
+            args["model_name"],
+            args["dataset"],
+            init_cls,
+            args["increment"],
+            args["prefix"],
+            args["selection"],
+            args["seed"],
+            args["convnet_type"],
+        )
+        self.datasets = args["dataset"]
     def after_task(self):
         self._known_classes = self._total_classes
         logging.info("Exemplar size: {}".format(self.exemplar_size))
@@ -74,7 +94,7 @@ class FOSTER_DM(BaseLearner):
             source="train",
             mode="train",
             appendent=self._get_memory(),
-            is_dd = True
+            # is_dd = True
         )
         self.train_loader = DataLoader(
             train_dataset,
@@ -97,7 +117,7 @@ class FOSTER_DM(BaseLearner):
             self._network = nn.DataParallel(self._network, self._multiple_gpus)
         self._train(self.train_loader, self.test_loader)
         self._old_network = self._network.copy().freeze()
-        self.build_rehearsal_memory(data_manager, self.samples_per_class)
+        self.build_rehearsal_memory(data_manager, self.samples_per_class,is_dd=self.is_dd,num_selection = self.num_selection)
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
 
@@ -113,12 +133,13 @@ class FOSTER_DM(BaseLearner):
             self._network_module_ptr = self._network.module
         if self._cur_task == 0:
             if use_pretrained:
-                f = open('./ini_resnet18_cifar100_foster', 'rb')
-                self._network = pickle.load(f)
-                # self._network.convnet.dual_ini(0)
-                # self._network.convnet.dual_ini(1)
-                self._network.to(self._device)
+                with open('./ini_foster_tiny_half', 'rb') as f:
+                    self._network = pickle.load(f)
+                    self._network.to(self._device)
+                with open('./ini_foster_tiny_half_models', 'rb') as f:
+                    self.models = pickle.load(f)
                 return
+            
             optimizer = optim.SGD(
                 filter(lambda p: p.requires_grad, self._network.parameters()),
                 momentum=0.9,
@@ -129,20 +150,22 @@ class FOSTER_DM(BaseLearner):
                 optimizer=optimizer, T_max=self.args["init_epochs"]
             )
             self._init_train(train_loader, test_loader, optimizer, scheduler)
-            f = open('./ini_resnet18_cifar100_foster', 'wb')
-            pickle.dump(self._network, f)
+            with open('./ini_foster_tiny_half', 'wb') as f:
+                pickle.dump(self._network.cpu(), f)
+            with open('./ini_foster_tiny_half_models', 'wb') as f:
+                pickle.dump(self.models, f)
+            self._network.to(self._device)
         else:
 
-            # cls_num_list = [self.samples_old_class] * self._known_classes + [
-            #     self.samples_new_class(i)
-            #     for i in range(self._known_classes, self._total_classes)
-            # ]
-            
-            cls_num_list_new = [
+            cls_num_list = [self.samples_old_class] * self._known_classes + [
                 self.samples_new_class(i)
                 for i in range(self._known_classes, self._total_classes)
             ]
-            cls_num_list = [self.n*np.sum(cls_num_list_new)/self._known_classes] * self._known_classes + cls_num_list_new
+            # cls_num_list_new = [
+            #     self.samples_new_class(i)
+            #     for i in range(self._known_classes, self._total_classes)
+            # ]
+            # cls_num_list = [self.inner_step*(np.sum(cls_num_list_new)/self._known_classes + self.samples_old_class)+ self.samples_old_class] * self._known_classes + cls_num_list_new
 
             effective_num = 1.0 - np.power(self.beta1, cls_num_list)
             per_cls_weights = (1.0 - self.beta1) / np.array(effective_num)
@@ -179,26 +202,26 @@ class FOSTER_DM(BaseLearner):
                 )
             else:
                 logging.info("do not weight align teacher!")
-            # cls_num_list = [self.samples_old_class] * self._known_classes + [
-            #     self.samples_new_class(i)
-            #     for i in range(self._known_classes, self._total_classes)
-            # ]
-            cls_num_list_new = [
+
+            cls_num_list = [self.samples_old_class] * self._known_classes + [
                 self.samples_new_class(i)
                 for i in range(self._known_classes, self._total_classes)
             ]
-            cls_num_list = [self.n*np.sum(cls_num_list_new)/self._known_classes] * self._known_classes + cls_num_list_new
-
-            effective_num = 1.0 - np.power(self.beta2, cls_num_list)
+            # cls_num_list_new = [
+            #     self.samples_new_class(i)
+            #     for i in range(self._known_classes, self._total_classes)
+            # ]
+            # cls_num_list = [self.inner_step*(np.sum(cls_num_list_new)/self._known_classes + self.samples_old_class)+ self.samples_old_class] * self._known_classes + cls_num_list_new
+            # effective_num = 1.0 - np.power(self.beta2, cls_num_list)
             per_cls_weights = (1.0 - self.beta2) / np.array(effective_num)
-            per_cls_weights = (
-                per_cls_weights / np.sum(per_cls_weights) * len(cls_num_list)
-            )
+            per_cls_weights = (per_cls_weights / np.sum(per_cls_weights) * len(cls_num_list))
             logging.info("per cls weights : {}".format(per_cls_weights))
             self.per_cls_weights = torch.FloatTensor(per_cls_weights).to(self._device)
             self._feature_compression(train_loader, test_loader)
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
+        if self.use_trajectory:
+            self.models = []
         prog_bar = tqdm(range(self.args["init_epochs"]))
         for _, epoch in enumerate(prog_bar):
             self.train()
@@ -217,6 +240,8 @@ class FOSTER_DM(BaseLearner):
                 _, preds = torch.max(logits, dim=1)
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
+            if self.use_trajectory:
+                self.models.append(self._network.copy().freeze().to('cpu'))
             scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
             
@@ -243,6 +268,8 @@ class FOSTER_DM(BaseLearner):
             logging.info(info)
 
     def _feature_boosting(self, train_loader, test_loader, optimizer, scheduler):
+        if self.use_trajectory:
+            self.models = []
         prog_bar = tqdm(range(self.args["boosting_epochs"]))
         for _, epoch in enumerate(prog_bar):
             self.train()
@@ -252,6 +279,44 @@ class FOSTER_DM(BaseLearner):
             losses_kd = 0.0
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
+                for j in range(self.inner_step):
+                    syn_inputs, syn_targets = self.get_random_batch(batch_size)
+                    syn_inputs, syn_targets = syn_inputs.to(
+                        self._device, non_blocking=True
+                    ), syn_targets.to(self._device, non_blocking=True)
+                    outputs = self._network(syn_inputs)
+                    logits, fe_logits, old_logits = (
+                        outputs["logits"],
+                        outputs["fe_logits"],
+                        outputs["old_logits"].detach(),
+                    )
+                    loss_clf = F.cross_entropy(logits / self.per_cls_weights, syn_targets)
+                    loss_fe = F.cross_entropy(fe_logits, syn_targets)
+                    loss_kd = self.lambda_okd * _KD_loss(
+                        logits[:, : self._known_classes], old_logits, self.args["T"]
+                    )
+                    loss = loss_clf + loss_fe + loss_kd
+                    optimizer.zero_grad()
+                    loss.backward()
+                    if self.oofc == "az":
+                        for i, p in enumerate(self._network_module_ptr.fc.parameters()):
+                            if i == 0:
+                                p.grad.data[
+                                    self._known_classes :,
+                                    : self._network_module_ptr.out_dim,
+                                ] = torch.tensor(0.0)
+                    elif self.oofc != "ft":
+                        assert 0, "not implemented"
+                    optimizer.step()
+                    losses += loss.item()
+                    losses_fe += loss_fe.item()
+                    losses_clf += loss_clf.item()
+                    losses_kd += (
+                        self._known_classes / self._total_classes
+                    ) * loss_kd.item()
+                    _, preds = torch.max(logits, dim=1)
+                    correct += preds.eq(syn_targets.expand_as(preds)).cpu().sum()
+                    total += len(syn_targets)
                 inputs, targets = inputs.to(
                     self._device, non_blocking=True
                 ), targets.to(self._device, non_blocking=True)
@@ -288,50 +353,8 @@ class FOSTER_DM(BaseLearner):
                 _, preds = torch.max(logits, dim=1)
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
-
-                for i in range(1):
-
-                    for j in range(self.n):
-                        
-
-                        seed = int(time.time() * 1000) % 100000
-                        inputs_syn, targets_syn = self.get_random_batch(batch_size)
-                        # inputs_syn = DiffAugment(inputs_syn, self.dsa_strategy, seed=seed, param=self.dsa_param)
-                        inputs_syn, targets_syn = inputs_syn.to(self._device), targets_syn.to(self._device)
-                        outputs = self._network(inputs_syn)
-                        logits, fe_logits, old_logits = (
-                            outputs["logits"],
-                            outputs["fe_logits"],
-                            outputs["old_logits"].detach(),
-                        )
-                        loss_clf = F.cross_entropy(logits / self.per_cls_weights, targets_syn)
-                        loss_fe = F.cross_entropy(fe_logits, targets_syn)
-                        loss_kd = self.lambda_okd * _KD_loss(
-                            logits[:, : self._known_classes], old_logits, self.args["T"]
-                        )
-                        loss = loss_clf + loss_fe + loss_kd
-                        optimizer.zero_grad()
-                        loss.backward()
-                        if self.oofc == "az":
-                            for i, p in enumerate(self._network_module_ptr.fc.parameters()):
-                                if i == 0:
-                                    p.grad.data[
-                                        self._known_classes :,
-                                        : self._network_module_ptr.out_dim,
-                                    ] = torch.tensor(0.0)
-                        elif self.oofc != "ft":
-                            assert 0, "not implemented"
-                        optimizer.step()
-                        losses += loss.item()
-                        losses_fe += loss_fe.item()
-                        losses_clf += loss_clf.item()
-                        losses_kd += (
-                            self._known_classes / self._total_classes
-                        ) * loss_kd.item()
-                        _, preds = torch.max(logits, dim=1)
-                        correct += preds.eq(targets_syn.expand_as(preds)).cpu().sum()
-                        total += len(targets_syn)
-
+            if self.use_trajectory:
+                self.models.append(self._network.copy().freeze().to('cpu'))
             scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
             if epoch % 5 == 0:
@@ -362,7 +385,7 @@ class FOSTER_DM(BaseLearner):
             logging.info(info)
 
     def _feature_compression(self, train_loader, test_loader):
-        self._snet = FOSTERNet(self.args, False)
+        self._snet = FOSTERNet(self.args, True)
         self._snet.update_fc(self._total_classes)
         if len(self._multiple_gpus) > 1:
             self._snet = nn.DataParallel(self._snet, self._multiple_gpus)
@@ -390,6 +413,28 @@ class FOSTER_DM(BaseLearner):
             losses = 0.0
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
+                for j in range(self.inner_step):
+                    syn_inputs, syn_targets = self.get_random_batch(batch_size)
+                    syn_inputs, syn_targets = syn_inputs.to(
+                        self._device, non_blocking=True
+                    ), syn_targets.to(self._device, non_blocking=True)
+                    dark_logits = self._snet(syn_inputs)["logits"]
+                    with torch.no_grad():
+                        outputs = self._network(syn_inputs)
+                        logits, old_logits, fe_logits = (
+                            outputs["logits"],
+                            outputs["old_logits"],
+                            outputs["fe_logits"],
+                        )
+                    loss_dark = self.BKD(dark_logits, logits, self.args["T"])
+                    loss = loss_dark
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    losses += loss.item()
+                    _, preds = torch.max(dark_logits[: syn_targets.shape[0]], dim=1)
+                    correct += preds.eq(syn_targets.expand_as(preds)).cpu().sum()
+                    total += len(syn_targets)
                 inputs, targets = inputs.to(
                     self._device, non_blocking=True
                 ), targets.to(self._device, non_blocking=True)
@@ -410,30 +455,6 @@ class FOSTER_DM(BaseLearner):
                 _, preds = torch.max(dark_logits[: targets.shape[0]], dim=1)
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
-                for i in range(1):
-
-                    for j in range(self.n):
-                        seed = int(time.time() * 1000) % 100000
-                        inputs_syn, targets_syn = self.get_random_batch(batch_size)
-                        # inputs_syn = DiffAugment(inputs_syn, self.dsa_strategy, seed=seed, param=self.dsa_param)
-                        inputs_syn, targets_syn = inputs_syn.to(self._device), targets_syn.to(self._device)
-                        dark_logits = self._snet(inputs_syn)["logits"]
-                        with torch.no_grad():
-                            outputs = self._network(inputs_syn)
-                            logits, old_logits, fe_logits = (
-                                outputs["logits"],
-                                outputs["old_logits"],
-                                outputs["fe_logits"],
-                            )
-                        loss_dark = self.BKD(dark_logits, logits, self.args["T"])
-                        loss = loss_dark
-                        optimizer.zero_grad()
-                        loss.backward()
-                        optimizer.step()
-                        losses += loss.item()
-                        _, preds = torch.max(dark_logits[: targets_syn.shape[0]], dim=1)
-                        correct += preds.eq(targets_syn.expand_as(preds)).cpu().sum()
-                        total += len(targets_syn)
             scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
             if epoch % 5 == 0:
@@ -488,7 +509,7 @@ class FOSTER_DM(BaseLearner):
     @property
     def samples_old_class(self):
         if self._fixed_memory:
-            return self._memory_per_class
+            return self._memory_per_class + self.num_selection
         else:
             assert self._total_classes != 0, "Total classes is 0"
             return self._memory_size // self._known_classes
@@ -505,7 +526,7 @@ class FOSTER_DM(BaseLearner):
         soft = soft * self.per_cls_weights
         soft = soft / soft.sum(1)[:, None]
         return -1 * torch.mul(soft, pred).sum() / pred.shape[0]
-    def _construct_exemplar_synthetic(self, data_manager, m):
+    def _construct_exemplar_synthetic(self, data_manager, m, num_selection:int):
         logging.info(
             "Constructing exemplars for new classes...({} for old classes)".format(m)
         )
@@ -516,25 +537,70 @@ class FOSTER_DM(BaseLearner):
             mode="test",
             ret_data=True,
         )
-        mean = [0.5071, 0.4866, 0.4409]
-        std = [0.2673, 0.2564, 0.2762]
         # task3
         # theta2 = (D1+T2,theta1)
         # D1+D2+T3   D2= (theta2,ran), D1 = (theta1,T1)
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)])
-        data = torch.stack([transform(img) for img in data]).numpy()
+        test_trsf = data_manager._test_trsf
+        common_trsf = data_manager._common_trsf
+        test_trsf = transforms.Compose([*test_trsf, *common_trsf])
+        if data_manager.use_path:
+            data = torch.stack([test_trsf(pil_loader(img)) for img in data]).numpy()
+        else:
+            data = torch.stack([test_trsf(img) for img in data]).numpy()
+        # _, real_label,real_dataset = data_manager.get_dataset(
+        #     classes_range,
+        #     source="train",
+        #     mode="test",
+        #     ret_data=True,
+        # )
         # distill_data + task+data
         # real_data = np.concatenate((self._data_memory, data)) if len(self._data_memory) != 0 else data
         real_data = data
         # Select
         # real_label = np.concatenate((self._targets_memory, targets)) if len(self._targets_memory) != 0 else targets
         real_label = targets
-        syn_data, syn_lablel = self.dd.gen_synthetic_data(self._old_network,None,real_data,real_label,classes_range)
-        syn_data = denormalize_cifar100(syn_data)
+        syn_data, syn_lablel = self.dd.gen_synthetic_data(
+            m,self._old_network, self.models, real_data, real_label, classes_range, self.path, dataset_name=self.datasets,use_convents=True,use_trajectory=self.use_trajectory)
+        if num_selection > 0:
+            select_data, select_label = self.dd.select_sample(
+                real_data, real_label, syn_data, syn_lablel.cpu(), self.models[-1], select_mode=self.selection,num_selection = num_selection)
+            if self.datasets == 'cifar100':
+                select_data = denormalize_cifar100(select_data)
+            elif self.datasets == 'tinyimagenet200':
+                select_data = denormalize_imageNet(select_data)
+            else:
+                select_data = denormalize_imageNet(select_data)
+            select_data = tensor2img(select_data)
+            if stor_images:
+                if data_manager.use_path:
+                    select_data = save_images(select_data, select_label,
+                                self.path, mode='select')
+                else:
+                    save_images(select_data, select_label,
+                                self.path, mode='select')
+            self._data_memory = (
+                np.concatenate((self._data_memory, select_data))
+                if len(self._data_memory) != 0
+                else select_data
+            )
+            self._targets_memory = (
+                np.concatenate((self._targets_memory, select_label))
+                if len(self._targets_memory) != 0
+                else select_label
+            )
+        if self.datasets == 'cifar100':
+            syn_data = denormalize_cifar100(syn_data)
+        elif self.datasets == 'tinyimagenet200':
+            syn_data = denormalize_imageNet(syn_data)
+        else:
+            syn_data = denormalize_imageNet(syn_data)
         syn_data = tensor2img(syn_data)
         syn_lablel = syn_lablel.cpu().numpy()
-        # if stor_images:
-        #     save_images(syn_data, syn_lablel)
+        if stor_images:
+            if data_manager.use_path:
+                syn_data = save_images(syn_data, syn_lablel, self.path, mode='sync')
+            else:
+                save_images(syn_data, syn_lablel, self.path, mode='sync')
         self._data_memory = (
             np.concatenate((self._data_memory, syn_data))
             if len(self._data_memory) != 0
@@ -545,11 +611,27 @@ class FOSTER_DM(BaseLearner):
             if len(self._targets_memory) != 0
             else syn_lablel
             )
-        
-    def build_rehearsal_memory(self, data_manager, per_class,is_dd=True):
+        # syn_data, syn_lablel = self.dd.gen_synthetic_data(self._old_network,None,real_data,real_label,classes_range,None)
+        # syn_data = denormalize_cifar100(syn_data)
+        # syn_data = tensor2img(syn_data)
+        # syn_lablel = syn_lablel.cpu().numpy()
+        # # if stor_images:
+        # #     save_images(syn_data, syn_lablel)
+        # self._data_memory = (
+        #     np.concatenate((self._data_memory, syn_data))
+        #     if len(self._data_memory) != 0
+        #     else syn_data
+        #     )
+        # self._targets_memory = (
+        #     np.concatenate((self._targets_memory, syn_lablel))
+        #     if len(self._targets_memory) != 0
+        #     else syn_lablel
+        #     )
+    def build_rehearsal_memory(self, data_manager, per_class, is_dd=True, num_selection=0):
         if self._fixed_memory:
             if is_dd:
-                self._construct_exemplar_synthetic(data_manager, per_class)
+                self._construct_exemplar_synthetic(
+                    data_manager, per_class, num_selection)
             else:
                 self._construct_exemplar_unified(data_manager, per_class)
         else:
@@ -563,22 +645,22 @@ class FOSTER_DM(BaseLearner):
 
         random_indices = np.random.choice(
             np.arange(len(self._targets_memory)), size=global_bs, replace=replace)
-        
+
         image = self._data_memory[random_indices]
         label = self._targets_memory[random_indices]
         seed = int(time.time() * 1000) % 100000
         # image = DiffAugment(image, self.dsa_strategy, seed=seed, param=self.dsa_param)
-        normalize = transforms.Normalize(mean = [0.5071, 0.4866, 0.4409],
-        std = [0.2673, 0.2564, 0.2762])
-        train_trsf = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=63 / 255),
-        transforms.ToTensor(),
-        normalize
-        ])
-        data = [train_trsf(Image.fromarray(img)) for img in image]
-        image = torch.stack(data)
+        train_trsf = self.data_manager._train_trsf
+        common_trsf = self.data_manager._common_trsf
+        train_trsf = transforms.Compose([*train_trsf, *common_trsf])
+
+        if self.data_manager.use_path:
+            image = torch.stack([train_trsf(pil_loader(img)) for img in image])
+        else:
+            image = torch.stack([train_trsf(Image.fromarray(img)) for img in image])
+
+        # data = [train_trsf(Image.fromarray(img)) for img in image]
+        # image = torch.stack(data)
         return [image, torch.tensor(label)]
     
 def _KD_loss(pred, soft, T):

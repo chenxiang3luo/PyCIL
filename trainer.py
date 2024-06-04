@@ -1,12 +1,15 @@
-import sys
-import logging
 import copy
+import datetime
+import logging
+import os
+import sys
+
+import numpy as np
 import torch
 from utils import factory
 from utils.data_manager import DataManager
+from utils.logging import ReDirectSTD
 from utils.toolkit import count_parameters
-import os
-import numpy as np
 
 
 def train(args):
@@ -23,7 +26,7 @@ def _train(args):
 
     init_cls = 0 if args ["init_cls"] == args["increment"] else args["init_cls"]
     logs_name = "logs/{}/{}/{}/{}".format(args["model_name"],args["dataset"], init_cls, args['increment'])
-    
+
     if not os.path.exists(logs_name):
         os.makedirs(logs_name)
 
@@ -36,6 +39,14 @@ def _train(args):
         args["seed"],
         args["convnet_type"],
     )
+
+    def time_str(fmt=None):
+        if fmt is None:
+            fmt = '%Y-%m-%d_%H:%M:%S'
+        return datetime.datetime.today().strftime(fmt)
+    stdout_file = os.path.join(logfilename, 'stdout_{}.txt'.format(time_str()))
+    ReDirectSTD(stdout_file, 'stdout', True)
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(filename)s] => %(message)s",

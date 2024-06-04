@@ -202,12 +202,12 @@ def rand_bbox(size, lam):
 
 def cutmix(images, args, rand_index=None, lam=None, bbox=None):
     if args.mode == 'fkd_save':
-        rand_index = torch.randperm(images.size()[0]).cuda()
+        rand_index = torch.randperm(images.size()[0]).cuda(args.device)
         lam = np.random.beta(args.cutmix, args.cutmix)
         bbx1, bby1, bbx2, bby2 = rand_bbox(images.size(), lam)
     elif args.mode == 'fkd_load':
         assert rand_index is not None and lam is not None and bbox is not None
-        rand_index = rand_index.cuda()
+        rand_index = rand_index.cuda(args.device)
         lam = lam
         bbx1, bby1, bbx2, bby2 = bbox
     else:

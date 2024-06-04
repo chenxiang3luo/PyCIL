@@ -128,6 +128,19 @@ def denormalize_cifar100(image_tensor, use_fp16=False):
 
     return image_tensor
 
+def denormalize_imageNet(image_tensor, use_fp16=False):
+    '''
+    convert floats back to input
+    '''
+    mean=np.array([0.485, 0.456, 0.406])
+    std=np.array([0.229, 0.224, 0.225])
+
+    for c in range(3):
+        m, s = mean[c], std[c]
+        image_tensor[:, c] = torch.clamp(image_tensor[:, c] * s + m, 0, 1)
+
+    return image_tensor
+
 from PIL import Image
 def tensor2img(images,is_batch = True):
     if is_batch:

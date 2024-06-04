@@ -11,7 +11,7 @@ from scipy.ndimage.interpolation import rotate as scipyrotate
 from torch.utils.data import Dataset
 from torchvision import datasets, transforms
 import random
-from .distill_augment import DiffAugment, DiffAugMethod
+# from .distill_augment import DiffAugment, DiffAugMethod
 from .fkd import (ComposeWithCoords, ImageFolder_FKD_MIX,
                   RandomHorizontalFlipWithRes, RandomResizedCropWithCoords,
                   mix_aug)
@@ -52,7 +52,67 @@ def distance_wb(gwr, gws):
     dis = dis_weight
     return dis
 
+def get_loops(ipc):
+    # Get the two hyper-parameters of outer-loop and inner-loop.
+    # The following values are empirically good.
+    if ipc == 1:
+        outer_loop, inner_loop = 1, 1
+    elif ipc == 10:
+        outer_loop, inner_loop = 10, 50
+        # log results
+        # 10,10,3000, 51.06%
+        # 10,10:50.59,higest:51.31
+    elif ipc == 20:
+        outer_loop, inner_loop = 20, 25
+    elif ipc == 30:
+        outer_loop, inner_loop = 30, 20
+    elif ipc == 40:
+        outer_loop, inner_loop = 40, 15
+    elif ipc == 50:
+        outer_loop, inner_loop = 50, 10
+    else:
+        outer_loop, inner_loop = 0, 0
+        exit('loop hyper-parameters are not defined for %d ipc'%ipc)
+    return outer_loop, inner_loop
 
+def epoch(mode, dataloader, net, optimizer, criterion,dsa, dsa_strategy,dsa_param,device, aug,dc_aug_param = None):
+    loss_avg, acc_avg, num_exp = 0, 0, 0
+    net = net.to(device)
+    criterion = criterion.to(device)
+
+    if mode == 'train':
+        net.train()
+    else:
+        net.eval()
+
+    for i_batch, datum in enumerate(dataloader):
+        img = datum[0].float().to(device)
+        if aug:
+            if dsa:
+                img = DiffAugment(img, dsa_strategy, param=dsa_param)
+            else:
+                img = augment(img, dc_aug_param, device=device)
+        lab = datum[1].long().to(device)
+        n_b = lab.shape[0]
+
+        output = net(img)['logits']
+
+        loss = criterion(output, lab)
+        acc = np.sum(np.equal(np.argmax(output.cpu().data.numpy(), axis=-1), lab.cpu().data.numpy()))
+
+        loss_avg += loss.item()*n_b
+        acc_avg += acc
+        num_exp += n_b
+
+        if mode == 'train':
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+    loss_avg /= num_exp
+    acc_avg /= num_exp
+
+    return loss_avg, acc_avg
 
 def match_loss(gw_syn, gw_real, args):
     dis = torch.tensor(0.0).to(args.device)
@@ -442,19 +502,23 @@ def clip(image_tensor, use_fp16=False):
         image_tensor[:, c] = torch.clamp(image_tensor[:, c], -m/s, (1 - m)/s)
     return image_tensor
 
-def save_images(images, targets,mode,arg):
+def save_images(images, targets, save_path, mode):
+    paths = []
     for id in range(len(images)):
         class_id = targets[id]
-
-
         # save into separate folders
-        dir_path = '{}'.format(f'/data2/chenxiang/PyCIL/dd_algorithms/{mode}_img/{arg}')
-        place_to_store = dir_path +'/class{:03d}_id{:03d}.jpg'.format(class_id,id)
+        dir_path = os.path.join(save_path, mode+'_img')
+        isExists=os.path.exists(dir_path) #判断路径是否存在，存在则返回true
+        if not isExists:
+            os.makedirs(dir_path) 
+        
+        place_to_store = os.path.join(dir_path, 'class'+str(class_id)+'_id'+str(id)+'.jpg')
 
         image_np = images[id]
         pil_image = Image.fromarray(image_np)
         pil_image.save(place_to_store)
-
+        paths.append(place_to_store)
+    return paths
 class EpisodicTensorDataset(Dataset):
     def __init__(self, data: torch.Tensor, labels: torch.Tensor, n_classes_per_step, n_samples_per_class):
         """

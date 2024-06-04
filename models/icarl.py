@@ -24,8 +24,8 @@ epochs = 170
 lrate = 0.01
 milestones = [80, 120]
 lrate_decay = 0.1
-batch_size = 256
-weight_decay = 1e-5
+batch_size = 128
+weight_decay = 2e-4
 num_workers = 8
 T = 2
 
@@ -73,7 +73,7 @@ class iCaRL(BaseLearner):
             np.arange(self._known_classes, self._total_classes),
             source="train",
             mode="train",
-            # appendent=self._get_memory(),
+            appendent=self._get_memory(),
         )
         self.train_loader = DataLoader(
             train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
